@@ -9,24 +9,54 @@ from urllib3 import PoolManager
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry as Retry
 
-def whoisServer(domain):
-    request = "https://www.iana.org/whois?q={}".format(domain)
-    response = requests.get(request).text
-    return response[response.find("<pre>")+5:response.rfind("</pre>")]
 
-def whois(domain,server):
-    query = f'{domain}\r\n'
-    connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    connection.connect((server, 43))
-    connection.send(query.encode())
-    response = ""
+class WhoisComponent:
+    def __init__(self, domain:str, servers:list=None, tryAll:bool=False):
+        self.domain = domain
+        self.servers = servers
+        self.tryAll = tryAll
 
-    while len(response) < 10000:
-        chunk = connection.recv(100).decode()
-        if (chunk == ''):
-            break
-        response = response + chunk
-    return response
+    def whois(self):
+        resultList = []
+        if self.servers:
+            for server in self.servers:
+                result = self._whois(server)
+                if result and not result.startswith("No match for"):
+                    if self.tryAll:
+                        resultList.append((server,result))
+                    else:
+                        return {"multi": False, "result": result}
+                else:
+                    pass
+            if resultList:
+                return {"multi": True, "result": resultList}
+            else:
+                return {"multi": False, "result": None}
+        else:
+            return {"multi": False, "result": self._whoisIana()}
+
+    def _whoisIana(self):
+        request = "https://www.iana.org/whois?q={}".format(self.domain)
+        response = requests.get(request).text
+        return response[response.find("<pre>")+5:response.rfind("</pre>")]
+    
+    def _whois(self,server):
+        try:
+            query = f'{self.domain}\r\n'
+            connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            connection.connect((server, 43))
+            connection.send(query.encode())
+        except:
+            return None
+        
+        response = ""
+
+        while len(response) < 10000:
+            chunk = connection.recv(100).decode()
+            if (chunk == ''):
+                break
+            response = response + chunk
+        return response
 
 def dnsQuery(domain,reverse=False,dnsServer=['8.8.8.8','8.8.4.4'], dnsRecords=["A","AAAA","MX","CNAME","SOA","TXT"]):
     target = domain
@@ -117,8 +147,8 @@ def getRequests(domain,port=443,secure=True):
     response = session.get(domain+"/robots.txt")
     robots = None
     if(response.status_code == 200 and response.text):
-        robots = response.text.splitlines()
-        sitemapUrls = [i[9:] for i in robots if i.startswith("Sitemap: ")]
+        robots = response.text
+        sitemapUrls = [i[9:] for i in robots.splitlines() if i.startswith("Sitemap: ")]
 
     sitemap = getSitemap(domain, sitemapUrls)
 
@@ -188,9 +218,9 @@ def getSitemap(domain:str, extraUrls:list=None):
 
 if __name__ == '__main__':
     domain = "www.redhat.com"
-    print(getRequests(domain,443,True))
-    print(checkSSL(domain))
-    print(certInfo(domain))
-    print(whoisServer(domain))
-    print(whois(domain,"whois.verisign-grs.com"))
-    print(dnsQuery(domain))
+    print(WhoisComponent(domain).whois()["result"])
+    print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois())
+    #print(getRequests(domain,443,True))
+    #print(checkSSL(domain))
+    #print(certInfo(domain))
+    #print(dnsQuery(domain))
