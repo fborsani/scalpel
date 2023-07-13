@@ -4,6 +4,7 @@ import socket
 import ssl
 import requests
 import OpenSSL
+import time
 from bs4 import BeautifulSoup
 from urllib3 import PoolManager
 from requests.adapters import HTTPAdapter
@@ -58,22 +59,66 @@ class WhoisComponent:
             response = response + chunk
         return response
 
-def dnsQuery(domain,reverse=False,dnsServer=['8.8.8.8','8.8.4.4'], dnsRecords=["A","AAAA","MX","CNAME","SOA","TXT"]):
-    target = domain
-    if reverse:
-        target = dns.reversename.from_address(domain)
-    resolver = dns.resolver.Resolver()
-    records = []
-    for r in dnsRecords:
-        try:
-            result = resolver.resolve(target,r)
-            record = [i.to_text() for i in result]
-            found = True
-        except Exception as e:
-            record = str(e)
-            found = False
-        records.append({"record": r, "found": found, "value": record})
-    return records
+class DnsComponent:
+    resolver = None
+    servers = []
+    def __init__(self,servers:list=["8.8.8.8","8.8.4.4"]):
+        self.servers = servers
+        self.resolver = dns.resolver.Resolver()
+
+    def reverse(self,address):
+        return dns.reversename.from_address(address).to_text()
+    
+    
+    def dnsQuery(self,target:str,records:list=["A","AAAA","MX","CNAME","SOA","TXT"], tryAll:bool=False):
+        results = []
+        for r in records:
+            try:
+                result = self.resolver.resolve(target,r)
+                record = [i.to_text() for i in result]
+                found = True
+            except Exception as e:
+                record = str(e)
+                found = False
+            results.append({"record": r, "found": found, "value": record})
+        return results
+    
+    def traceroute(self,domain:str, port:int=33434, ttl:int=30):
+        rec = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        snd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+
+        resolvAddr = self.dnsQuery(domain,["A"])
+        if len(resolvAddr) == 0:
+            return None
+        print(resolvAddr)
+        destAddress = resolvAddr[0]["value"][0]
+        print(destAddress)
+        currAddress = ""
+        hops = []
+
+        rec.bind(("",0))
+        rec.settimeout(5)
+        
+        for hop in range(1, ttl+1):
+            if currAddress != destAddress:
+                snd.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, hop)
+                snd.sendto(b"", (destAddress, port))
+                print("sent")
+                try:
+                    sendTime = time.perf_counter_ns()
+                    _, currAddr = rec.recvfrom(512)
+                    currAddr = currAddr[0]
+                    hostname = socket.gethostbyaddr(currAddr)[0]
+                    recTime = time.perf_counter_ns()
+                    elapsed = (recTime - sendTime) / 1e6
+                    print(currAddr+" - "+hostname+" - "+str(elapsed))
+                except socket.error:
+                    currAddr = None
+                    elapsed = None
+                hops.append((currAddr,hostname,elapsed))
+            else:
+                return hops
+        return hops
 
 def certInfo(domain,port=443):
     ctx = ssl.create_default_context()
@@ -220,6 +265,7 @@ if __name__ == '__main__':
     domain = "www.redhat.com"
     print(WhoisComponent(domain).whois()["result"])
     print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois())
+    print(DnsComponent().traceroute("example.com"))
     #print(getRequests(domain,443,True))
     #print(checkSSL(domain))
     #print(certInfo(domain))
