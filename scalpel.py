@@ -1,5 +1,6 @@
 import dns
 from dns import resolver
+from dns.exception import DNSException
 import socket
 import ssl
 import requests
@@ -7,8 +8,10 @@ import OpenSSL
 import time
 from bs4 import BeautifulSoup
 from urllib3 import PoolManager
-from requests.adapters import HTTPAdapter
+from urllib.parse import urlparse
 from urllib3.util.retry import Retry as Retry
+from requests.adapters import HTTPAdapter
+
 
 
 class WhoisComponent:
@@ -27,9 +30,7 @@ class WhoisComponent:
                         resultList.append((server,result))
                     else:
                         return {"multi": False, "result": result}
-                else:
-                    pass
-            if resultList:
+            if len(resultList) > 0:
                 return {"multi": True, "result": resultList}
             else:
                 return {"multi": False, "result": None}
@@ -42,13 +43,10 @@ class WhoisComponent:
         return response[response.find("<pre>")+5:response.rfind("</pre>")]
     
     def _whois(self,server):
-        try:
-            query = f'{self.domain}\r\n'
-            connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            connection.connect((server, 43))
-            connection.send(query.encode())
-        except:
-            return None
+        query = f'{self.domain}\r\n'
+        connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connection.connect((server, 43))
+        connection.send(query.encode())
         
         response = ""
 
@@ -57,41 +55,48 @@ class WhoisComponent:
             if (chunk == ''):
                 break
             response = response + chunk
+   
         return response
 
 class DnsComponent:
-    resolver = None
-    servers = []
-    def __init__(self,servers:list=["8.8.8.8","8.8.4.4"]):
+    def __init__(self, domain:str, servers:list=["8.8.8.8","8.8.4.4"], records:list = ["A","AAAA","CNAME","PTR","MX","SOA","TXT"]):
+        self.domain = domain
         self.servers = servers
+        self.records = records
         self.resolver = dns.resolver.Resolver()
 
     def reverse(self,address):
-        return dns.reversename.from_address(address).to_text()
+         addr=dns.reversename.from_address(address).to_text()
+         result = self.dnsSingleQuery(addr,"PTR")
+         return result[0] if result else addr
     
+    def dnsSingleQuery(self,target:str,record:str):
+        try:
+            result = self.resolver.resolve(target)
+            return [i.to_text() for i in result]
+        except DNSException:
+            return None
     
-    def dnsQuery(self,target:str,records:list=["A","AAAA","MX","CNAME","SOA","TXT"], tryAll:bool=False):
+    def dnsQuery(self, tryAll:bool=False):
         results = []
-        for r in records:
+        for r in self.records:
             try:
-                result = self.resolver.resolve(target,r)
+                result = self.resolver.resolve(self.domain,r)
                 record = [i.to_text() for i in result]
-                found = True
-            except Exception as e:
-                record = str(e)
-                found = False
-            results.append({"record": r, "found": found, "value": record})
+                results.append({"record": r, "value": record})
+            except DNSException:
+                 results.append({"record": r, "value": None})
         return results
     
-    def traceroute(self,domain:str, port:int=33434, ttl:int=30):
+    def traceroute(self, port:int=33434, ttl:int=30):
         rec = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
         snd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 
-        resolvAddr = self.dnsQuery(domain,["A"])
-        if len(resolvAddr) == 0:
+        destAddress = self.dnsSingleQuery(self.domain,"A")
+        if len(destAddress) == 0:
             return None
-        print(resolvAddr)
-        destAddress = resolvAddr[0]["value"][0]
+        destAddress = destAddress[0]
+
         print(destAddress)
         currAddress = ""
         hops = []
@@ -103,21 +108,21 @@ class DnsComponent:
             if currAddress != destAddress:
                 snd.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, hop)
                 snd.sendto(b"", (destAddress, port))
-                print("sent")
                 try:
                     sendTime = time.perf_counter_ns()
-                    _, currAddr = rec.recvfrom(512)
-                    currAddr = currAddr[0]
-                    hostname = socket.gethostbyaddr(currAddr)[0]
+                    _, currAddress = rec.recvfrom(512)
+                    currAddress = currAddress[0]
+                    hostname = self.reverse(currAddress)
                     recTime = time.perf_counter_ns()
                     elapsed = (recTime - sendTime) / 1e6
-                    print(currAddr+" - "+hostname+" - "+str(elapsed))
+                    print(currAddress+" - "+str(hostname)+" - "+str(elapsed))
                 except socket.error:
-                    currAddr = None
+                    currAddress = None
                     elapsed = None
-                hops.append((currAddr,hostname,elapsed))
+                hops.append((hop,currAddress,hostname,elapsed))
             else:
-                return hops
+                break
+            
         return hops
 
 def certInfo(domain,port=443):
@@ -262,10 +267,12 @@ def getSitemap(domain:str, extraUrls:list=None):
         
 
 if __name__ == '__main__':
-    domain = "www.redhat.com"
+    domain = "www.google.com"
     print(WhoisComponent(domain).whois()["result"])
-    print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois())
-    print(DnsComponent().traceroute("example.com"))
+    print("---")
+    print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois()["result"])
+    print(DnsComponent(domain).dnsQuery())
+    print(DnsComponent(domain).traceroute(ttl=80))
     #print(getRequests(domain,443,True))
     #print(checkSSL(domain))
     #print(certInfo(domain))
