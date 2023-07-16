@@ -3,39 +3,109 @@ from dns import resolver
 from dns.exception import DNSException
 import socket
 import ssl
-import requests
 import OpenSSL
-import time
 from bs4 import BeautifulSoup
+from urllib import parse
 from urllib3 import PoolManager
-from urllib.parse import urlparse
 from urllib3.util.retry import Retry as Retry
+import requests
 from requests.adapters import HTTPAdapter
+import time
+import argparse
+
+from enum import Enum
+from abc import ABC,abstractmethod
 
 
+class Settings():
+    SECURE_SCHEME="https"
+    DEFAULT_PORT=443
 
-class WhoisComponent:
-    def __init__(self, domain:str, servers:list=None, tryAll:bool=False):
+    class VerboseLevels(Enum):
+        NONE = 0
+        LOW = 1
+        HIGH = 2
+
+    def __init__(self):
+        parse.urlparse
+        parser = argparse.ArgumentParser(description='Enumerate information about a website')
+        parser.add_argument("url")
+        parser.add_argument("--whois-server", action="append", help="Specify a whois server to use")
+        parser.add_argument("--whois-server-file", action="append", help="Specify a whois file to import. File must contain the domain and the server separated by space")
+        args = vars(parser.parse_args())
+        print(args)
+
+        parsedUrl = parse.urlparse(args["url"])
+        self.fullUrl = parsedUrl.path
+        self.scheme, self.secure = self._validateScheme(parsedUrl.scheme)
+        self.domain = self._clearHostname(parsedUrl.hostname)
+        self.port = parsedUrl.port or self.DEFAULT_PORT
+
+        self.whoisServer = None
+        self.whoisForceServer = False
+        if args["whois_server"]:
+            self.whoisServer = args["whois_server"]
+            self.whoisForceServer = True
+        elif args["whois_server_file"]:
+            self.whoisServer = args["whois_server_file"]
+
+
+    def _clearHostname(self, hostname:str):
+        return hostname[hostname.rfind("www."):]
+    
+    def _validateScheme(self,scheme:str):
+        if not scheme:
+            return (self.SECURE_SCHEME, True)
+        if scheme == "http" or scheme == "https":
+            return (scheme, scheme == "https")
+        else:
+            raise Exception("Invalid schema: valid values are http or https")
+        
+    def _fileReader(targetList:list, path:str):
+        with open(path, 'r') as f:
+            for line in f:
+                targetList.append(tuple(line.split()))
+
+
+class OutputWriter():
+    def __init__(self, settings:Settings):
+        pass
+
+    def print():
+        pass
+
+class EnumComponent(ABC):
+    def __init__(self, outputWriter:OutputWriter):
+        self.outputWriter = outputWriter
+        super().__init__()
+
+    @abstractmethod
+    def printBanner(self) -> str:
+        pass
+        
+
+class WhoisComponent():
+    def __init__(self, domain:str, servers:list=None, force:bool=False, outputWriter:OutputWriter=None):
         self.domain = domain
         self.servers = servers
-        self.tryAll = tryAll
+        self.force = force
 
     def whois(self):
-        resultList = []
         if self.servers:
-            for server in self.servers:
-                result = self._whois(server)
-                if result and not result.startswith("No match for"):
-                    if self.tryAll:
-                        resultList.append((server,result))
-                    else:
-                        return {"multi": False, "result": result}
-            if len(resultList) > 0:
-                return {"multi": True, "result": resultList}
+            if self.force:
+                return self._whois(self.servers[0])
             else:
-                return {"multi": False, "result": None}
-        else:
-            return {"multi": False, "result": self._whoisIana()}
+                server = self._pickServer()
+                if server:
+                    return self._whois(server)
+        return self._whoisIana()
+        
+    def _pickServer(self):
+        ext = self.domain[self.domain.rfind("."):]
+        for server in self.servers:
+            if server[0] == ext:
+                return server[0]
+        return None
 
     def _whoisIana(self):
         request = "https://www.iana.org/whois?q={}".format(self.domain)
@@ -72,7 +142,7 @@ class DnsComponent:
     
     def dnsSingleQuery(self,target:str,record:str):
         try:
-            result = self.resolver.resolve(target)
+            result = self.resolver.resolve(target,record)
             return [i.to_text() for i in result]
         except DNSException:
             return None
@@ -88,7 +158,7 @@ class DnsComponent:
                  results.append({"record": r, "value": None})
         return results
     
-    def traceroute(self, port:int=33434, ttl:int=30):
+    def traceroute(self, port:int=33434, ttl:int=30, timeout:int=5, showGateway:bool=False):
         rec = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
         snd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 
@@ -97,12 +167,12 @@ class DnsComponent:
             return None
         destAddress = destAddress[0]
 
-        print(destAddress)
         currAddress = ""
+        counter = 0
         hops = []
 
-        rec.bind(("",0))
-        rec.settimeout(5)
+        rec.bind(("",port))
+        rec.settimeout(timeout)
         
         for hop in range(1, ttl+1):
             if currAddress != destAddress:
@@ -115,69 +185,80 @@ class DnsComponent:
                     hostname = self.reverse(currAddress)
                     recTime = time.perf_counter_ns()
                     elapsed = (recTime - sendTime) / 1e6
-                    print(currAddress+" - "+str(hostname)+" - "+str(elapsed))
                 except socket.error:
                     currAddress = None
                     elapsed = None
-                hops.append((hop,currAddress,hostname,elapsed))
+                if showGateway or not (showGateway or "gateway" in hostname):
+                    counter += 1
+                    hops.append((counter,currAddress,hostname,elapsed))
             else:
                 break
             
         return hops
 
-def certInfo(domain,port=443):
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    with ctx.wrap_socket(socket.socket(), server_hostname=domain) as sock:
-        sock.connect((domain, port))
-        certDER = sock.getpeercert(True)
-        sock.close()
-        certPEM = ssl.DER_cert_to_PEM_cert(certDER)
-        cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, certPEM)
-        ext = [cert.get_extension(i) for i in range(cert.get_extension_count())]
-        return {
-            "certDER": certDER,
-            "certPEM": str(certPEM),
-            "subject": dict(cert.get_subject().get_components()),
-            "issuedBy": dict(cert.get_issuer().get_components()),
-            "serialNumber": cert.get_serial_number(),
-            "version": cert.get_version(),
-            "validFrom": cert.get_notBefore(),
-            "validTo": cert.get_notAfter(),
-            "extension": {e.get_short_name().strip(): str(e) for e in ext}}
-    
-class SSLAdapter(HTTPAdapter):
-    def __init__(self, sslVersion=None, **kwargs):
-        self.sslVersion = sslVersion
+class SSLComponent:
+    class SSLAdapter(HTTPAdapter):
+        def __init__(self, sslVersion=None, **kwargs):
+            self.sslVersion = sslVersion
 
-        super(SSLAdapter, self).__init__(**kwargs)
+            super(SSLComponent.SSLAdapter, self).__init__(**kwargs)
 
-    def init_poolmanager(self, connections, maxsize, block=False):
-        self.poolmanager = PoolManager(num_pools=connections,
-                                       maxsize=maxsize,
-                                       block=block,
-                                       ssl_version=self.sslVersion)
-    
-def sslRequest(domain, sslVersion, port=443):
-    session = requests.Session()
-    session.mount("https://",SSLAdapter(sslVersion[1]))
-    try:
-        response = session.get("https://"+domain+":"+str(port))
-        print(sslVersion[0]+": OK")
-    except:
-        print(sslVersion[0]+": not supported")
+        def init_poolmanager(self, connections, maxsize, block=False):
+            self.poolmanager = PoolManager(num_pools=connections,
+                                        maxsize=maxsize,
+                                        block=block,
+                                        ssl_version=self.sslVersion)
 
-def checkSSL(domain, port=443):
-    print(ssl.OPENSSL_VERSION)
-    formats = [
-                ("SSL 3", ssl.PROTOCOL_SSLv23),
-                ("TLS 1.0", ssl.PROTOCOL_TLSv1),
-                ("TLS 1.1", ssl.PROTOCOL_TLSv1_1),
-                ("TLS 1.2", ssl.PROTOCOL_TLSv1_2)
-            ]      
-    for f in formats:
-        sslRequest(domain, f, port)
+    def __init__(self, domain:str, port:int=443):
+        self.domain = domain
+        self.port = port
+
+    def getOpenSSLVersion():
+        return ssl.OPENSSL_VERSION
+
+    def certInfo(self):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with ctx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
+            sock.connect((self.domain, self.port))
+            certDER = sock.getpeercert(True)
+            sock.close()
+            certPEM = ssl.DER_cert_to_PEM_cert(certDER)
+            cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, certPEM)
+            ext = [cert.get_extension(i) for i in range(cert.get_extension_count())]
+            return {
+                "certDER": certDER,
+                "certPEM": str(certPEM),
+                "subject": dict(cert.get_subject().get_components()),
+                "issuedBy": dict(cert.get_issuer().get_components()),
+                "serialNumber": cert.get_serial_number(),
+                "version": cert.get_version(),
+                "validFrom": cert.get_notBefore(),
+                "validTo": cert.get_notAfter(),
+                "extension": {e.get_short_name().strip(): str(e) for e in ext}}
+      
+    def _testSSL(self, sslVersion):
+        session = requests.Session()
+        session.mount("https://",SSLComponent.SSLAdapter(sslVersion))
+        try:
+            response = session.get("https://"+self.domain+":"+str(self.port))
+            return True
+        except:
+            return False
+
+    def checkSSL(self):
+        results = []
+        formats = [
+                    ("SSL 3", ssl.PROTOCOL_SSLv23),
+                    ("TLS 1.0", ssl.PROTOCOL_TLSv1),
+                    ("TLS 1.1", ssl.PROTOCOL_TLSv1_1),
+                    ("TLS 1.2", ssl.PROTOCOL_TLSv1_2)
+                ]      
+        for f in formats:
+            fname, fvalue = f
+            results.append((fname, self._testSSL(fvalue)))
+        return results
 
 def getRequests(domain,port=443,secure=True):
     protocol = "https" if secure or port == 443 else "http"
@@ -267,13 +348,15 @@ def getSitemap(domain:str, extraUrls:list=None):
         
 
 if __name__ == '__main__':
-    domain = "www.google.com"
-    print(WhoisComponent(domain).whois()["result"])
-    print("---")
-    print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois()["result"])
-    print(DnsComponent(domain).dnsQuery())
-    print(DnsComponent(domain).traceroute(ttl=80))
-    #print(getRequests(domain,443,True))
+    settings = Settings()
+    ow = OutputWriter(settings)
+    print(WhoisComponent(settings.domain, settings.whoisServer, settings.whoisForceServer).whois())
+    #print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois())
+    print(DnsComponent(settings.domain).dnsQuery())
+    print(DnsComponent(settings.domain).traceroute(ttl=80))
+    print(SSLComponent(settings.domain).certInfo())
+    print(SSLComponent(settings.domain).checkSSL())
+    print(getRequests(settings.domain,settings.port,settings.secure))
     #print(checkSSL(domain))
     #print(certInfo(domain))
     #print(dnsQuery(domain))
