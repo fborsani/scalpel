@@ -12,10 +12,8 @@ import requests
 from requests.adapters import HTTPAdapter
 import time
 import argparse
-
 from enum import Enum
-from abc import ABC,abstractmethod
-
+from abc import ABC, abstractmethod
 
 class Settings():
     SECURE_SCHEME="https"
@@ -33,7 +31,6 @@ class Settings():
         parser.add_argument("--whois-server", action="append", help="Specify a whois server to use")
         parser.add_argument("--whois-server-file", action="append", help="Specify a whois file to import. File must contain the domain and the server separated by space")
         args = vars(parser.parse_args())
-        print(args)
 
         parsedUrl = parse.urlparse(args["url"])
         self.fullUrl = parsedUrl.path
@@ -48,7 +45,6 @@ class Settings():
             self.whoisForceServer = True
         elif args["whois_server_file"]:
             self.whoisServer = args["whois_server_file"]
-
 
     def _clearHostname(self, hostname:str):
         return hostname[hostname.rfind("www."):]
@@ -66,29 +62,45 @@ class Settings():
             for line in f:
                 targetList.append(tuple(line.split()))
 
+class EnumComponent(ABC):
+    def __init__(self, id:str, bannerName:str, outputWriter):
+        self.outputWriter = outputWriter
+        self.id = id
+        self.bannerName = bannerName
+
+    @abstractmethod
+    def prettyPrint(self) -> dict:
+        pass
 
 class OutputWriter():
     def __init__(self, settings:Settings):
         pass
 
-    def print():
-        pass
+    def print(self, input):
+        if isinstance(input,str):
+            print(input)
+        elif isinstance(input, dict):
+            title = input["title"]
+            result = input["result"]
+            print(title)
+            for r in result:
+                if isinstance(r, tuple):
+                    argName, argValue = r
+                    print("{}:\t{}".format(argName,argValue))
+                elif isinstance(r, str):
+                    print(r)
 
-class EnumComponent(ABC):
-    def __init__(self, outputWriter:OutputWriter):
-        self.outputWriter = outputWriter
-        super().__init__()
+    def printBanner(self, component:EnumComponent):
+        banner = "="*5+component.bannerName+"="*5
+        print(banner)
 
-    @abstractmethod
-    def printBanner(self) -> str:
-        pass
-        
 
-class WhoisComponent():
+class WhoisComponent(EnumComponent):
     def __init__(self, domain:str, servers:list=None, force:bool=False, outputWriter:OutputWriter=None):
         self.domain = domain
         self.servers = servers
         self.force = force
+        super().__init__("who","WHOIS COMPONENT",outputWriter)
 
     def whois(self):
         if self.servers:
@@ -128,12 +140,13 @@ class WhoisComponent():
    
         return response
 
-class DnsComponent:
-    def __init__(self, domain:str, servers:list=["8.8.8.8","8.8.4.4"], records:list = ["A","AAAA","CNAME","PTR","MX","SOA","TXT"]):
+class DnsComponent(EnumComponent):
+    def __init__(self, domain:str, servers:list=["8.8.8.8","8.8.4.4"], records:list = ["A","AAAA","CNAME","PTR","MX","SOA","TXT"], outputWriter:OutputWriter=None):
         self.domain = domain
         self.servers = servers
         self.records = records
         self.resolver = dns.resolver.Resolver()
+        super().__init__("dns","DNS COMPONENT",outputWriter)
 
     def reverse(self,address):
          addr=dns.reversename.from_address(address).to_text()
@@ -153,11 +166,12 @@ class DnsComponent:
             try:
                 result = self.resolver.resolve(self.domain,r)
                 record = [i.to_text() for i in result]
-                results.append({"record": r, "value": record})
+                results.append((r, record))
             except DNSException:
-                 results.append({"record": r, "value": None})
+                 results.append((r, None))
         return results
-    
+
+    #TODO: move to dedicated class    
     def traceroute(self, port:int=33434, ttl:int=30, timeout:int=5, showGateway:bool=False):
         rec = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
         snd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -350,13 +364,17 @@ def getSitemap(domain:str, extraUrls:list=None):
 if __name__ == '__main__':
     settings = Settings()
     ow = OutputWriter(settings)
-    print(WhoisComponent(settings.domain, settings.whoisServer, settings.whoisForceServer).whois())
+    wc = WhoisComponent(settings.domain, settings.whoisServer, settings.whoisForceServer, outputWriter=ow)
+    ow.printBanner(wc)
+    ow.print(wc.whois())
     #print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois())
-    print(DnsComponent(settings.domain).dnsQuery())
-    print(DnsComponent(settings.domain).traceroute(ttl=80))
-    print(SSLComponent(settings.domain).certInfo())
-    print(SSLComponent(settings.domain).checkSSL())
-    print(getRequests(settings.domain,settings.port,settings.secure))
+    dnsc = DnsComponent(settings.domain,outputWriter=ow)
+    ow.printBanner(dnsc)
+    ow.print(dnsc.dnsQuery())
+    ow.print(dnsc.traceroute(ttl=80))
+    #print(SSLComponent(settings.domain).certInfo())
+    #print(SSLComponent(settings.domain).checkSSL())
+    #print(getRequests(settings.domain,settings.port,settings.secure))
     #print(checkSSL(domain))
     #print(certInfo(domain))
     #print(dnsQuery(domain))
