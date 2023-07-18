@@ -13,7 +13,6 @@ from requests.adapters import HTTPAdapter
 import time
 import argparse
 from enum import Enum
-from abc import ABC, abstractmethod
 
 class Settings():
     SECURE_SCHEME="https"
@@ -62,38 +61,57 @@ class Settings():
             for line in f:
                 targetList.append(tuple(line.split()))
 
-class EnumComponent(ABC):
+class EnumComponent():
     def __init__(self, id:str, bannerName:str, outputWriter):
         self.outputWriter = outputWriter
         self.id = id
         self.bannerName = bannerName
 
-    @abstractmethod
-    def prettyPrint(self) -> dict:
-        pass
-
 class OutputWriter():
     def __init__(self, settings:Settings):
         pass
 
-    def print(self, input):
+    def print(self, input, tab:int=0):
         if isinstance(input,str):
-            print(input)
-        elif isinstance(input, dict):
-            title = input["title"]
-            result = input["result"]
-            print(title)
-            for r in result:
+            print("\t"*tab+input)
+        elif isinstance(input,dict):
+            pass
+        elif isinstance(input, list):
+            for r in input:
                 if isinstance(r, tuple):
                     argName, argValue = r
-                    print("{}:\t{}".format(argName,argValue))
+                    if isinstance(argValue, list):
+                        print("\t"*tab+argName)
+                        self.print(argValue, tab=tab+1)
+                    else:
+                        print("\t"*tab+"{}:\t{}".format(argName,argValue))
                 elif isinstance(r, str):
-                    print(r)
+                    print("\t"*tab+r)
+        else:
+            print("\t"*tab+str(input))
+    
+    def printTable(self, rows:list, cols:list, padding:list):
+        sep = "| "
+        tableLen = sum(padding) + len(sep) * (len(cols)+1)
+        header = ""
+        for c in range(0,len(cols)):
+            header = header + sep + f"{cols[c]:<{padding[c]}s}"
+        header = header + sep
+        
+        print(header)
+        print("-" * tableLen)
+
+        for r in rows:
+            row = sep
+            for i in range(0,len(cols)):
+                row = row + f"{r[i]:<{padding[i]}s}"+sep
+            print(row)
+        
+        print("-" * tableLen)
 
     def printBanner(self, component:EnumComponent):
         banner = "="*5+component.bannerName+"="*5
         print(banner)
-
 
 class WhoisComponent(EnumComponent):
     def __init__(self, domain:str, servers:list=None, force:bool=False, outputWriter:OutputWriter=None):
@@ -146,7 +164,7 @@ class DnsComponent(EnumComponent):
         self.servers = servers
         self.records = records
         self.resolver = dns.resolver.Resolver()
-        super().__init__("dns","DNS COMPONENT",outputWriter)
+        super().__init__("dns","DNS RECORDS",outputWriter)
 
     def reverse(self,address):
          addr=dns.reversename.from_address(address).to_text()
@@ -171,61 +189,73 @@ class DnsComponent(EnumComponent):
                  results.append((r, None))
         return results
 
-    #TODO: move to dedicated class    
-    def traceroute(self, port:int=33434, ttl:int=30, timeout:int=5, showGateway:bool=False):
+class TraceComponent(EnumComponent):
+    def __init__(self, dnsComponent:DnsComponent, domain:str, port:int=33434, ttl:int=30, timeout:int=2, showGateway:bool=False, outputWriter:OutputWriter=None):
+        self.dns = dnsComponent
+        self.domain = domain
+        self.port = port
+        self.ttl = ttl
+        self.timeout = timeout
+        self.showGateway = showGateway
+        super().__init__("trace","TRACEROUTE",outputWriter)
+
+    def traceroute(self):
         rec = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
         snd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 
-        destAddress = self.dnsSingleQuery(self.domain,"A")
+        destAddress = self.dns.dnsSingleQuery(self.domain,"A")
         if len(destAddress) == 0:
             return None
         destAddress = destAddress[0]
 
         currAddress = ""
+        gatewayAddr = None
         counter = 0
         hops = []
 
-        rec.bind(("",port))
-        rec.settimeout(timeout)
+        rec.bind(("",self.port))
+        rec.settimeout(self.timeout)
         
-        for hop in range(1, ttl+1):
+        for hop in range(1, self.ttl+1):
             if currAddress != destAddress:
                 snd.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, hop)
-                snd.sendto(b"", (destAddress, port))
+                snd.sendto(b"", (destAddress, self.port))
                 try:
                     sendTime = time.perf_counter_ns()
                     _, currAddress = rec.recvfrom(512)
                     currAddress = currAddress[0]
-                    hostname = self.reverse(currAddress)
+                    hostname = self.dns.reverse(currAddress)
                     recTime = time.perf_counter_ns()
                     elapsed = (recTime - sendTime) / 1e6
                 except socket.error:
                     currAddress = None
                     elapsed = None
-                if showGateway or not (showGateway or "gateway" in hostname):
+                if self.showGateway or not (self.showGateway or gatewayAddr == hostname):
                     counter += 1
-                    hops.append((counter,currAddress,hostname,elapsed))
+                    hops.append((str(counter),currAddress,hostname,f"{elapsed:.2f}"))
+                    if not gatewayAddr:
+                        gatewayAddr = hostname
             else:
-                break
-            
+                break           
         return hops
 
-class SSLComponent:
+class SSLComponent(EnumComponent):
     class SSLAdapter(HTTPAdapter):
         def __init__(self, sslVersion=None, **kwargs):
             self.sslVersion = sslVersion
 
             super(SSLComponent.SSLAdapter, self).__init__(**kwargs)
 
-        def init_poolmanager(self, connections, maxsize, block=False):
+        def init_poolmanager(self, connections, maxsize, block=False, ):
             self.poolmanager = PoolManager(num_pools=connections,
                                         maxsize=maxsize,
                                         block=block,
                                         ssl_version=self.sslVersion)
-
-    def __init__(self, domain:str, port:int=443):
+            
+    def __init__(self, domain:str, port:int=443, outputWriter:OutputWriter=None):
         self.domain = domain
         self.port = port
+        super().__init__("ssl","CERTIFICATE AND SSL",outputWriter)
 
     def getOpenSSLVersion():
         return ssl.OPENSSL_VERSION
@@ -264,7 +294,7 @@ class SSLComponent:
     def checkSSL(self):
         results = []
         formats = [
-                    ("SSL 3", ssl.PROTOCOL_SSLv23),
+                    ("SSL 3.0", ssl.PROTOCOL_SSLv23),
                     ("TLS 1.0", ssl.PROTOCOL_TLSv1),
                     ("TLS 1.1", ssl.PROTOCOL_TLSv1_1),
                     ("TLS 1.2", ssl.PROTOCOL_TLSv1_2)
@@ -371,10 +401,11 @@ if __name__ == '__main__':
     dnsc = DnsComponent(settings.domain,outputWriter=ow)
     ow.printBanner(dnsc)
     ow.print(dnsc.dnsQuery())
-    ow.print(dnsc.traceroute(ttl=80))
+    trc = TraceComponent(dnsc,settings.domain,outputWriter=ow)
+    ow.printBanner(trc)
+    ow.printTable(trc.traceroute(),["Hop","Address","Domain","Time (ms)"],[4,16,40,10])
+    sslc = SSLComponent(settings.domain,outputWriter=ow)
+    ow.printBanner(sslc)
+    ow.print(sslc.checkSSL())
     #print(SSLComponent(settings.domain).certInfo())
-    #print(SSLComponent(settings.domain).checkSSL())
     #print(getRequests(settings.domain,settings.port,settings.secure))
-    #print(checkSSL(domain))
-    #print(certInfo(domain))
-    #print(dnsQuery(domain))
