@@ -4,6 +4,7 @@ from dns.exception import DNSException
 import socket
 import ssl
 import OpenSSL
+from OpenSSL import crypto
 from bs4 import BeautifulSoup
 from urllib import parse
 from urllib3 import PoolManager
@@ -75,7 +76,9 @@ class OutputWriter():
         if isinstance(input,str):
             print("\t"*tab+input)
         elif isinstance(input,dict):
-            pass
+            for key in input:
+                print("\t"*tab+str(key))
+                self.print(input[key], tab=tab+1)
         elif isinstance(input, list):
             for r in input:
                 if isinstance(r, tuple):
@@ -270,18 +273,32 @@ class SSLComponent(EnumComponent):
             sock.close()
             certPEM = ssl.DER_cert_to_PEM_cert(certDER)
             cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, certPEM)
-            ext = [cert.get_extension(i) for i in range(cert.get_extension_count())]
+            pubKey = cert.get_pubkey()
+            pubKeyStr= crypto.dump_publickey(crypto.FILETYPE_PEM,pubKey)
+            keySize = pubKey.bits()
+            #ext = [cert.get_extension(i) for i in range(cert.get_extension_count())]
+            # "extension": {e.get_short_name().strip(): str(e) for e in ext}
             return {
-                "certDER": certDER,
-                "certPEM": str(certPEM),
-                "subject": dict(cert.get_subject().get_components()),
-                "issuedBy": dict(cert.get_issuer().get_components()),
-                "serialNumber": cert.get_serial_number(),
+                "Ceritificate (DER)": certDER,
+                "Ceritificate (PEM)": str(certPEM),
+                "Public key": pubKeyStr,
+                "Key format": pubKey.type(),
+                "Key length": keySize,
+                "Subject": dict(cert.get_subject().get_components()),
+                "Issuer": dict(cert.get_issuer().get_components()),
+                "Serial Number": cert.get_serial_number(),
                 "version": cert.get_version(),
-                "validFrom": cert.get_notBefore(),
-                "validTo": cert.get_notAfter(),
-                "extension": {e.get_short_name().strip(): str(e) for e in ext}}
-      
+                "Valid from": cert.get_notBefore(),
+                "Valid until": cert.get_notAfter()}
+        
+    def _formatKeyType(self, pubKey):
+        if pubKey.type() == crypto.TYPE_RSA:
+            return "RSA"
+        if pubKey.type() == crypto.TYPE_DSA:
+            return "DSA"
+        crypto.
+        return "Not found"
+
     def _testSSL(self, sslVersion):
         session = requests.Session()
         session.mount("https://",SSLComponent.SSLAdapter(sslVersion))
@@ -303,12 +320,43 @@ class SSLComponent(EnumComponent):
             fname, fvalue = f
             results.append((fname, self._testSSL(fvalue)))
         return results
+    
+class HTTPComponent(EnumComponent):
+    def __init__(self, url:str, outputWriter:OutputWriter=None):
+        self.url = url
+        self.session = requests.Session()
+        super().__init__("http","HTTP REQUESTS",outputWriter)
 
+    def getHTTPinfo(self):
+        response = self.session.get(self.url)
+        options = self.session.options(self.url)
+
+        httpVersion = response.raw.version
+        headers = dict(response.headers)
+        cookies = self.session.cookies.get_dict()
+        allowedMethods = options.headers["Allow"]
+
+        return {
+            "Response code": response.status_code,
+            "HTTP version": self._formatHttpVersion(httpVersion),
+            "Methods": allowedMethods,
+            "Headers": headers,
+            "Cookies": cookies
+        }
+
+    def _formatHttpVersion(self, version:int) -> str: 
+        if version == 10:
+            return "HTTP 1.0"
+        if version == 11:
+            return "HTTP 1.1"
+        return "Not Found"
+    
 def getRequests(domain,port=443,secure=True):
     protocol = "https" if secure or port == 443 else "http"
     session = requests.Session()
     domain = "{}://{}:{}".format(protocol,domain,port)
     response = session.get(domain)
+    options = session.options(domain).headers["Allow"]
     soup = BeautifulSoup(response.text,"html.parser")
     iconLink = soup.find("link", rel="shortcut icon")
     
@@ -329,6 +377,7 @@ def getRequests(domain,port=443,secure=True):
 
     return {"code": response.status_code,
             "httpVersion": httpVersion,
+            "options": options,
             "headers": response.headers,
             "cookies": session.cookies.get_dict(), 
             "robots": robots,
@@ -407,5 +456,9 @@ if __name__ == '__main__':
     sslc = SSLComponent(settings.domain,outputWriter=ow)
     ow.printBanner(sslc)
     ow.print(sslc.checkSSL())
+    ow.print(sslc.certInfo())
+    httpc = HTTPComponent("https://"+settings.domain,ow)
+    ow.printBanner(httpc)
+    ow.print(httpc.getHTTPinfo())
     #print(SSLComponent(settings.domain).certInfo())
-    #print(getRequests(settings.domain,settings.port,settings.secure))
+    
