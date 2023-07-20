@@ -296,7 +296,6 @@ class SSLComponent(EnumComponent):
             return "RSA"
         if pubKey.type() == crypto.TYPE_DSA:
             return "DSA"
-        crypto.
         return "Not found"
 
     def _testSSL(self, sslVersion):
