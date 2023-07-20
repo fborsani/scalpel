@@ -5,6 +5,7 @@ import socket
 import ssl
 import OpenSSL
 from OpenSSL import crypto
+from OpenSSL import SSL
 from bs4 import BeautifulSoup
 from urllib import parse
 from urllib3 import PoolManager
@@ -13,6 +14,7 @@ import requests
 from requests.adapters import HTTPAdapter
 import time
 import argparse
+from datetime import datetime
 from enum import Enum
 
 class Settings():
@@ -75,9 +77,14 @@ class OutputWriter():
     def print(self, input, tab:int=0):
         if isinstance(input,str):
             print("\t"*tab+input)
+        elif isinstance(input,bytes):
+            try:
+                print("\t"*tab+input.decode())
+            except:
+                print("\t"*tab+input)
         elif isinstance(input,dict):
             for key in input:
-                print("\t"*tab+str(key))
+                self.print(key,tab)
                 self.print(input[key], tab=tab+1)
         elif isinstance(input, list):
             for r in input:
@@ -279,17 +286,20 @@ class SSLComponent(EnumComponent):
             #ext = [cert.get_extension(i) for i in range(cert.get_extension_count())]
             # "extension": {e.get_short_name().strip(): str(e) for e in ext}
             return {
-                "Ceritificate (DER)": certDER,
                 "Ceritificate (PEM)": str(certPEM),
+                "Expired": cert.has_expired(),
+                "Signature": cert.get_signature_algorithm(),
+                "Fingerprint (SHA1)":cert.digest('sha1'),
+                "Fingerprint (SHA256)":cert.digest('sha256'),
+                "Serial Number": cert.get_serial_number(),
+                "Version": cert.get_version(),
                 "Public key": pubKeyStr,
                 "Key format": pubKey.type(),
-                "Key length": keySize,
+                "Key length": pubKey.bits(),
                 "Subject": dict(cert.get_subject().get_components()),
                 "Issuer": dict(cert.get_issuer().get_components()),
-                "Serial Number": cert.get_serial_number(),
-                "version": cert.get_version(),
-                "Valid from": cert.get_notBefore(),
-                "Valid until": cert.get_notAfter()}
+                "Valid from": datetime.strptime(cert.get_notBefore().decode(), "%Y%m%d%H%M%S%z").date().isoformat(),
+                "Valid until": datetime.strptime(cert.get_notAfter().decode(), "%Y%m%d%H%M%S%z").date().isoformat()}
         
     def _formatKeyType(self, pubKey):
         if pubKey.type() == crypto.TYPE_RSA:
