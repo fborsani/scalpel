@@ -5,40 +5,36 @@ import socket
 import ssl
 import OpenSSL
 from OpenSSL import crypto
-from OpenSSL import SSL
 from bs4 import BeautifulSoup
-from urllib import parse
 from urllib3 import PoolManager
-from urllib3.util.retry import Retry as Retry
 import requests
 from requests.adapters import HTTPAdapter
 import time
 import argparse
 from datetime import datetime
 from enum import Enum
+from colorama import Fore, Back, Style, init as coloramaInit
+
+class EnumComponent():
+    def __init__(self, id:str, bannerName:str, outputWriter):
+        self.outputWriter = outputWriter
+        self.id = id
+        self.bannerName = bannerName
+
 
 class Settings():
     SECURE_SCHEME="https"
     DEFAULT_PORT=443
 
-    class VerboseLevels(Enum):
-        NONE = 0
-        LOW = 1
-        HIGH = 2
-
     def __init__(self):
-        parse.urlparse
         parser = argparse.ArgumentParser(description='Enumerate information about a website')
         parser.add_argument("url")
         parser.add_argument("--whois-server", action="append", help="Specify a whois server to use")
         parser.add_argument("--whois-server-file", action="append", help="Specify a whois file to import. File must contain the domain and the server separated by space")
         args = vars(parser.parse_args())
 
-        parsedUrl = parse.urlparse(args["url"])
-        self.fullUrl = parsedUrl.path
-        self.scheme, self.secure = self._validateScheme(parsedUrl.scheme)
-        self.domain = self._clearHostname(parsedUrl.hostname)
-        self.port = parsedUrl.port or self.DEFAULT_PORT
+        print(self._parseUrl(args["url"]))
+        self.url, self.domain, self.domainSimple, self.port, self.method = self._parseUrl(args["url"])
 
         self.whoisServer = None
         self.whoisForceServer = False
@@ -48,57 +44,117 @@ class Settings():
         elif args["whois_server_file"]:
             self.whoisServer = args["whois_server_file"]
 
-    def _clearHostname(self, hostname:str):
-        return hostname[hostname.rfind("www."):]
-    
-    def _validateScheme(self,scheme:str):
-        if not scheme:
-            return (self.SECURE_SCHEME, True)
-        if scheme == "http" or scheme == "https":
-            return (scheme, scheme == "https")
-        else:
-            raise Exception("Invalid schema: valid values are http or https")
+
+    def _parseUrl(self, url:str) -> tuple:
+        url = url.strip().lower()
+
+        idxParams = url.find("?")
+        urlNoParams = url[:idxParams] if idxParams > 0 else url 
         
+
+        idxMethod = urlNoParams.find("://")
+        urlNoMethod = urlNoParams[idxMethod+3:] if idxMethod > 0 else urlNoParams
+
+        idxPort = urlNoMethod.rfind(":")
+
+        domain = urlNoMethod[:idxPort] if idxPort > 0 else urlNoMethod
+        domainSimple = domain
+
+        if domain.startswith("www."):
+            domainSimple = domain[4:]
+
+        if idxMethod < 0:
+            urlNoParams = Settings.SECURE_SCHEME + "://" + urlNoParams
+
+        return (
+            urlNoParams,
+            domain,
+            domainSimple,
+            urlNoMethod[idxPort+1:] if idxPort > -1 else Settings.DEFAULT_PORT,
+            urlNoParams[:idxMethod] if idxMethod > -1 else Settings.SECURE_SCHEME
+        )
+  
     def _fileReader(targetList:list, path:str):
         with open(path, 'r') as f:
             for line in f:
                 targetList.append(tuple(line.split()))
 
-class EnumComponent():
-    def __init__(self, id:str, bannerName:str, outputWriter):
-        self.outputWriter = outputWriter
-        self.id = id
-        self.bannerName = bannerName
-
 class OutputWriter():
-    def __init__(self, settings:Settings):
-        pass
+    class msgType(Enum):
+        DEFAULT = (Fore.GREEN,"",""),
+        BANNER = (Fore.GREEN, Back.LIGHTGREEN_EX, Style.BRIGHT),
+        ARGNAME = (Fore.GREEN, "", Style.BRIGHT),
+        INFO = (Fore.BLUE,"",""),
+        SUCCESS = (Fore.GREEN, "", ""),
+        WARN = (Fore.YELLOW,"",""),
+        ERROR = (Fore.RED,"", ""),
+        END = Style.RESET_ALL
 
-    def print(self, input, tab:int=0):
-        if isinstance(input,str):
-            print("\t"*tab+input)
-        elif isinstance(input,bytes):
+    PLACEHOLDER_NONE = "None"
+    PLACEHOLDER_TRUE = "Yes"
+    PLACEHOLDER_FALSE = "No"
+
+    def __init__(self, settings:Settings):
+        self.rowSize = 120
+        coloramaInit()
+
+    def applyStyle(self, input:str, type=msgType.DEFAULT):
+        if isinstance (input,bytes):
             try:
-                print("\t"*tab+input.decode())
+                input = input.decode()
             except:
-                print("\t"*tab+input)
-        elif isinstance(input,dict):
+                input = str(input)
+
+        fore, back, style = type.value[0]
+        return "{}{}{}{}{}".format(fore, back, style, input, OutputWriter.msgType.END.value)
+
+    def getFormattedString(self, input, tab:int=0):
+        strOut = "\t"*tab
+
+        if input is None:
+            return strOut + self.applyStyle(OutputWriter.PLACEHOLDER_NONE, OutputWriter.msgType.ERROR)
+        
+        if isinstance(input, bool):
+            value = OutputWriter.PLACEHOLDER_FALSE
+            style = OutputWriter.msgType.ERROR
+            
+            if input == True:
+                value = OutputWriter.PLACEHOLDER_TRUE
+                style = OutputWriter.msgType.SUCCESS
+            return strOut + self.applyStyle(value, style)
+        
+        if isinstance(input, str) or isinstance(input, bytes):
+            return strOut + self.applyStyle(input)
+        
+        if isinstance(input, dict):
+            strOut = ""
             for key in input:
-                self.print(key,tab)
-                self.print(input[key], tab=tab+1)
-        elif isinstance(input, list):
+                entry = "\t"*tab + self.applyStyle(key, OutputWriter.msgType.ARGNAME) + "\n" + self.getFormattedString(input[key], tab+1) + "\n"
+                strOut = strOut + entry
+            return strOut
+        
+        if isinstance(input, tuple):
+            argName, argValue = r
+            strKey = self.applyStyle(argName, OutputWriter.msgType.ARGNAME)
+            strVal = self.getFormattedString(argValue, tab+1)
+            return strOut + strKey + str
+        
+        if isinstance(input, list):
+            strOut = ""
             for r in input:
+                entry = "\t"*tab
                 if isinstance(r, tuple):
                     argName, argValue = r
-                    if isinstance(argValue, list):
-                        print("\t"*tab+argName)
-                        self.print(argValue, tab=tab+1)
-                    else:
-                        print("\t"*tab+"{}:\t{}".format(argName,argValue))
-                elif isinstance(r, str):
-                    print("\t"*tab+r)
-        else:
-            print("\t"*tab+str(input))
+                    strKey = self.applyStyle(argName, OutputWriter.msgType.ARGNAME)
+                    strVal = self.getFormattedString(argValue, tab+1)
+                    entry = strKey + "\n" + strVal
+                else:
+                    entry = self.applyStyle(str(r))
+            
+                strOut = strOut + entry +"\n"
+            return strOut
+        
+        return strOut + self.applyStyle(str(input))
     
     def printTable(self, rows:list, cols:list, padding:list):
         sep = "| "
@@ -119,9 +175,9 @@ class OutputWriter():
         
         print("-" * tableLen)
 
-    def printBanner(self, component:EnumComponent):
+    def getBanner(self, component:EnumComponent):
         banner = "="*5+component.bannerName+"="*5
-        print(banner)
+        return "\n"+self.applyStyle(banner,OutputWriter.msgType.BANNER)+"\n"
 
 class WhoisComponent(EnumComponent):
     def __init__(self, domain:str, servers:list=None, force:bool=False, outputWriter:OutputWriter=None):
@@ -287,7 +343,7 @@ class SSLComponent(EnumComponent):
             # "extension": {e.get_short_name().strip(): str(e) for e in ext}
             return {
                 "Ceritificate (PEM)": str(certPEM),
-                "Expired": cert.has_expired(),
+                "Valid": not cert.has_expired(),
                 "Signature": cert.get_signature_algorithm(),
                 "Fingerprint (SHA1)":cert.digest('sha1'),
                 "Fingerprint (SHA256)":cert.digest('sha256'),
@@ -331,10 +387,36 @@ class SSLComponent(EnumComponent):
         return results
     
 class HTTPComponent(EnumComponent):
+    httpCodeDictionary = {
+        200: "OK",
+        201: "OK - resource created",
+        204: "OK - empty response",
+        301: "Permanent redirect",
+        302: "Temporary redirerct",
+        400: "Malformed request",
+        401: "Authentication required",
+        403: "Access forbidden",
+        404: "Not found",
+        405: "Method not allowed",
+        429: "Too many requests",
+        500: "Server failure",
+        501: "Method not implemented",
+        502: "Gateway error - upstream server failure",
+        503: "Server unavailable",
+        504: "Gateway error - upstream server timeout",
+        505: "HTTP version not supported"
+    }
+
     def __init__(self, url:str, outputWriter:OutputWriter=None):
         self.url = url
         self.session = requests.Session()
         super().__init__("http","HTTP REQUESTS",outputWriter)
+
+    def formatHTTPCode(self, code:int) -> str:
+        try:
+            return "{} ({})".format(code, self.httpCodeDictionary[code])
+        except:
+            return code
 
     def getHTTPinfo(self):
         response = self.session.get(self.url)
@@ -346,7 +428,7 @@ class HTTPComponent(EnumComponent):
         allowedMethods = options.headers["Allow"]
 
         return {
-            "Response code": response.status_code,
+            "Response code": self.formatHTTPCode(response.status_code),
             "HTTP version": self._formatHttpVersion(httpVersion),
             "Methods": allowedMethods,
             "Headers": headers,
@@ -359,6 +441,40 @@ class HTTPComponent(EnumComponent):
         if version == 11:
             return "HTTP 1.1"
         return "Not Found"
+    
+    def _parseRequest(self, req, trim:int=80):
+        status = req.status_code
+        text = None
+        if status == 200:
+            if req.text:
+                text = req.text[:trim]+"..."
+            else:
+                text = "Empty response"
+
+        return {
+            "Code": self.formatHTTPCode(status),
+            "Response": text
+        }
+    
+    def testHTTPMethods(self):
+        getReq = self.session.get(self.url)
+        postReq = self.session.post(self.url)
+        headReq = self.session.head(self.url)
+        optReq = self.session.options(self.url)
+        putReq = self.session.put(self.url)
+        patchReq = self.session.patch(self.url)
+        deleteReq = self.session.delete(self.url)
+
+        return{
+            "GET": self._parseRequest(getReq),
+            "POST": self._parseRequest(postReq),
+            "HEAD": self._parseRequest(headReq),
+            "OPTIONS": self._parseRequest(optReq),
+            "PUT": self._parseRequest(putReq),
+            "PATCH": self._parseRequest(patchReq),
+            "DELETE": self._parseRequest(deleteReq),
+        }
+
     
 def getRequests(domain,port=443,secure=True):
     protocol = "https" if secure or port == 443 else "http"
@@ -453,21 +569,21 @@ if __name__ == '__main__':
     settings = Settings()
     ow = OutputWriter(settings)
     wc = WhoisComponent(settings.domain, settings.whoisServer, settings.whoisForceServer, outputWriter=ow)
-    ow.printBanner(wc)
-    ow.print(wc.whois())
+    print(ow.getBanner(wc))
+    print(ow.getFormattedString(wc.whois()))
     #print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois())
     dnsc = DnsComponent(settings.domain,outputWriter=ow)
-    ow.printBanner(dnsc)
-    ow.print(dnsc.dnsQuery())
+    print(ow.getBanner(dnsc))
+    print(ow.getFormattedString(dnsc.dnsQuery()))
     trc = TraceComponent(dnsc,settings.domain,outputWriter=ow)
-    ow.printBanner(trc)
+    print(ow.getBanner(trc))
     ow.printTable(trc.traceroute(),["Hop","Address","Domain","Time (ms)"],[4,16,40,10])
     sslc = SSLComponent(settings.domain,outputWriter=ow)
-    ow.printBanner(sslc)
-    ow.print(sslc.checkSSL())
-    ow.print(sslc.certInfo())
-    httpc = HTTPComponent("https://"+settings.domain,ow)
-    ow.printBanner(httpc)
-    ow.print(httpc.getHTTPinfo())
+    print(ow.getBanner(sslc))
+    print(ow.getFormattedString(sslc.checkSSL()))
+    print(ow.getFormattedString(sslc.certInfo()))
+    httpc = HTTPComponent(settings.url,ow)
+    print(ow.getBanner(httpc))
+    print(ow.getFormattedString(httpc.getHTTPinfo()))
+    print(ow.getFormattedString(httpc.testHTTPMethods()))
     #print(SSLComponent(settings.domain).certInfo())
-    
