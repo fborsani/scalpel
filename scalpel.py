@@ -33,7 +33,6 @@ class Settings():
         parser.add_argument("--whois-server-file", action="append", help="Specify a whois file to import. File must contain the domain and the server separated by space")
         args = vars(parser.parse_args())
 
-        print(self._parseUrl(args["url"]))
         self.url, self.domain, self.domainSimple, self.port, self.method = self._parseUrl(args["url"])
 
         self.whoisServer = None
