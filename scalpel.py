@@ -123,7 +123,7 @@ class OutputWriter():
             return strOut + self.applyStyle(value, style)
         
         if isinstance(input, str) or isinstance(input, bytes):
-            return strOut + self.applyStyle(input)
+            return strOut + self.applyStyle(input).replace("\n","\n"+"\t"*tab)
         
         if isinstance(input, dict):
             strOut = ""
@@ -337,9 +337,7 @@ class SSLComponent(EnumComponent):
             cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, certPEM)
             pubKey = cert.get_pubkey()
             pubKeyStr= crypto.dump_publickey(crypto.FILETYPE_PEM,pubKey)
-            keySize = pubKey.bits()
-            #ext = [cert.get_extension(i) for i in range(cert.get_extension_count())]
-            # "extension": {e.get_short_name().strip(): str(e) for e in ext}
+            ext = [cert.get_extension(i) for i in range(cert.get_extension_count())]
             return {
                 "Ceritificate (PEM)": str(certPEM),
                 "Valid": not cert.has_expired(),
@@ -354,7 +352,9 @@ class SSLComponent(EnumComponent):
                 "Subject": dict(cert.get_subject().get_components()),
                 "Issuer": dict(cert.get_issuer().get_components()),
                 "Valid from": datetime.strptime(cert.get_notBefore().decode(), "%Y%m%d%H%M%S%z").date().isoformat(),
-                "Valid until": datetime.strptime(cert.get_notAfter().decode(), "%Y%m%d%H%M%S%z").date().isoformat()}
+                "Valid until": datetime.strptime(cert.get_notAfter().decode(), "%Y%m%d%H%M%S%z").date().isoformat(),
+                "Extended information": {e.get_short_name().decode(): str(e) for e in ext}
+                }
         
     def _formatKeyType(self, pubKey):
         if pubKey.type() == crypto.TYPE_RSA:
