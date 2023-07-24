@@ -148,9 +148,9 @@ class OutputWriter():
                     strVal = self.getFormattedString(argValue, tab+1)
                     entry = strKey + "\n" + strVal
                 else:
-                    entry = self.applyStyle(str(r))
+                    entry = entry + self.applyStyle(str(r))
             
-                strOut = strOut + entry +"\n"
+                strOut = strOut + entry + "\n"
             return strOut
         
         return strOut + self.applyStyle(str(input))
@@ -158,25 +158,29 @@ class OutputWriter():
     def printTable(self, rows:list, cols:list, padding:list):
         sep = "| "
         tableLen = sum(padding) + len(sep) * (len(cols)+1)
+        sepRow = "\n" + "-" * tableLen
+
         header = ""
+        body = ""
+
         for c in range(0,len(cols)):
-            header = header + sep + f"{cols[c]:<{padding[c]}s}"
-        header = header + sep
-        
-        print(header)
-        print("-" * tableLen)
+            header += sep + f"{cols[c]:<{padding[c]}s}"
 
         for r in rows:
             row = sep
             for i in range(0,len(cols)):
-                row = row + f"{r[i]:<{padding[i]}s}"+sep
-            print(row)
-        
-        print("-" * tableLen)
+                row += f"{r[i]:<{padding[i]}s}"+sep
+            body += "\n" + row
+
+        return self.applyStyle(header + sepRow + body + sepRow)
 
     def getBanner(self, component:EnumComponent):
         banner = "="*5+component.bannerName+"="*5
         return "\n"+self.applyStyle(banner,OutputWriter.msgType.BANNER)+"\n"
+    
+    def writeToFile(self):
+        pass
+
 
 class WhoisComponent(EnumComponent):
     def __init__(self, domain:str, servers:list=None, force:bool=False, outputWriter:OutputWriter=None):
@@ -223,6 +227,7 @@ class WhoisComponent(EnumComponent):
    
         return response
 
+
 class DnsComponent(EnumComponent):
     def __init__(self, domain:str, servers:list=["8.8.8.8","8.8.4.4"], records:list = ["A","AAAA","CNAME","PTR","MX","SOA","TXT"], outputWriter:OutputWriter=None):
         self.domain = domain
@@ -253,6 +258,7 @@ class DnsComponent(EnumComponent):
             except DNSException:
                  results.append((r, None))
         return results
+
 
 class TraceComponent(EnumComponent):
     def __init__(self, dnsComponent:DnsComponent, domain:str, port:int=33434, ttl:int=30, timeout:int=2, showGateway:bool=False, outputWriter:OutputWriter=None):
@@ -303,6 +309,7 @@ class TraceComponent(EnumComponent):
             else:
                 break           
         return hops
+
 
 class SSLComponent(EnumComponent):
     class SSLAdapter(HTTPAdapter):
@@ -385,6 +392,7 @@ class SSLComponent(EnumComponent):
             results.append((fname, self._testSSL(fvalue)))
         return results
     
+
 class HTTPComponent(EnumComponent):
     httpCodeDictionary = {
         200: "OK",
@@ -423,15 +431,24 @@ class HTTPComponent(EnumComponent):
 
         httpVersion = response.raw.version
         headers = dict(response.headers)
-        cookies = self.session.cookies.get_dict()
+        cookies = self.session.cookies
         allowedMethods = options.headers["Allow"]
 
         return {
             "Response code": self.formatHTTPCode(response.status_code),
             "HTTP version": self._formatHttpVersion(httpVersion),
             "Methods": allowedMethods,
-            "Headers": headers,
-            "Cookies": cookies
+            "Headers": {k: [r.strip() for r in v.split(";") if r ] for k,v in response.headers.items()},
+            "Cookies": {k.name: {
+                            "Value": k.value,
+                            "Comment": k.comment,
+                            "Expires": datetime.fromtimestamp(k.expires),
+                            "Domain": k.domain,
+                            "Path": k.path,
+                            "Secure": k.secure,
+                            "HttpOnly": k.has_nonstandard_attr("HttpOnly"),
+                            "SameSite": k.get_nonstandard_attr("SameSite") if k.has_nonstandard_attr("SameSite") else False
+                        } for k in self.session.cookies}
         }
 
     def _formatHttpVersion(self, version:int) -> str: 
@@ -502,7 +519,7 @@ def getRequests(domain,port=443,secure=True):
     return {"code": response.status_code,
             "httpVersion": httpVersion,
             "options": options,
-            "headers": response.headers,
+            "headers": {k: [r.trim() for r in v.split(";") if r ] for k,v in response.headers.items()},
             "cookies": session.cookies.get_dict(), 
             "robots": robots,
             "faviconPath": iconLink,
@@ -576,7 +593,7 @@ if __name__ == '__main__':
     print(ow.getFormattedString(dnsc.dnsQuery()))
     trc = TraceComponent(dnsc,settings.domain,outputWriter=ow)
     print(ow.getBanner(trc))
-    ow.printTable(trc.traceroute(),["Hop","Address","Domain","Time (ms)"],[4,16,40,10])
+    print(ow.printTable(trc.traceroute(),["Hop","Address","Domain","Time (ms)"],[4,16,40,10]))
     sslc = SSLComponent(settings.domain,outputWriter=ow)
     print(ow.getBanner(sslc))
     print(ow.getFormattedString(sslc.checkSSL()))
@@ -585,4 +602,3 @@ if __name__ == '__main__':
     print(ow.getBanner(httpc))
     print(ow.getFormattedString(httpc.getHTTPinfo()))
     print(ow.getFormattedString(httpc.testHTTPMethods()))
-    #print(SSLComponent(settings.domain).certInfo())
