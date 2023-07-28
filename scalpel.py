@@ -187,7 +187,7 @@ class WhoisComponent(EnumComponent):
         self.domain = domain
         self.servers = servers
         self.force = force
-        super().__init__("who","WHOIS COMPONENT",outputWriter)
+        super().__init__("who","WHOIS RECORDS",outputWriter)
 
     def whois(self):
         if self.servers:
@@ -354,13 +354,13 @@ class SSLComponent(EnumComponent):
                 "Serial Number": cert.get_serial_number(),
                 "Version": cert.get_version(),
                 "Public key": pubKeyStr,
-                "Key format": pubKey.type(),
+                "Key format": self._formatKeyType(pubKey),
                 "Key length": pubKey.bits(),
                 "Subject": dict(cert.get_subject().get_components()),
                 "Issuer": dict(cert.get_issuer().get_components()),
                 "Valid from": datetime.strptime(cert.get_notBefore().decode(), "%Y%m%d%H%M%S%z").date().isoformat(),
                 "Valid until": datetime.strptime(cert.get_notAfter().decode(), "%Y%m%d%H%M%S%z").date().isoformat(),
-                "Extended information": {e.get_short_name().decode(): str(e) for e in ext}
+                "Extended information": {e.get_short_name().decode(): str(e).replace(", ","\n") for e in ext}
                 }
         
     def _formatKeyType(self, pubKey):
@@ -368,7 +368,7 @@ class SSLComponent(EnumComponent):
             return "RSA"
         if pubKey.type() == crypto.TYPE_DSA:
             return "DSA"
-        return "Not found"
+        return pubKey.type()
 
     def _testSSL(self, sslVersion):
         session = requests.Session()
@@ -442,7 +442,7 @@ class HTTPComponent(EnumComponent):
             "Cookies": {k.name: {
                             "Value": k.value,
                             "Comment": k.comment,
-                            "Expires": datetime.fromtimestamp(k.expires),
+                            "Expires": datetime.fromtimestamp(k.expires) if k.expires else None,
                             "Domain": k.domain,
                             "Path": k.path,
                             "Secure": k.secure,
@@ -591,9 +591,9 @@ if __name__ == '__main__':
     dnsc = DnsComponent(settings.domain,outputWriter=ow)
     print(ow.getBanner(dnsc))
     print(ow.getFormattedString(dnsc.dnsQuery()))
-    trc = TraceComponent(dnsc,settings.domain,outputWriter=ow)
-    print(ow.getBanner(trc))
-    print(ow.printTable(trc.traceroute(),["Hop","Address","Domain","Time (ms)"],[4,16,40,10]))
+    #trc = TraceComponent(dnsc,settings.domain,outputWriter=ow)
+    #print(ow.getBanner(trc))
+    #print(ow.printTable(trc.traceroute(),["Hop","Address","Domain","Time (ms)"],[4,16,40,10]))
     sslc = SSLComponent(settings.domain,outputWriter=ow)
     print(ow.getBanner(sslc))
     print(ow.getFormattedString(sslc.checkSSL()))
