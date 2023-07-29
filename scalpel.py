@@ -3,6 +3,7 @@ from dns import resolver
 from dns.exception import DNSException
 import socket
 import ssl
+from ssl import SSLError
 import OpenSSL
 from OpenSSL import crypto
 from bs4 import BeautifulSoup
@@ -98,16 +99,19 @@ class OutputWriter():
         coloramaInit()
 
     def applyStyle(self, input:str, type=msgType.DEFAULT):
-        if isinstance (input,bytes):
+        if isinstance (input, bytes):
             try:
                 input = input.decode()
             except:
                 input = str(input)
 
         fore, back, style = type.value[0]
-        return "{}{}{}{}{}".format(fore, back, style, input, OutputWriter.msgType.END.value)
+        return "{}{}{}{}{}".format(fore, back, style, input.strip(), OutputWriter.msgType.END.value)
 
-    def getFormattedString(self, input, tab:int=0):
+    def getFormattedString(self, input):
+        return "{}\n".format(self.inputParser(input,0))
+
+    def inputParser(self, input, tab:int=0):
         strOut = "\t"*tab
 
         if input is None:
@@ -123,34 +127,42 @@ class OutputWriter():
             return strOut + self.applyStyle(value, style)
         
         if isinstance(input, str) or isinstance(input, bytes):
-            return strOut + self.applyStyle(input).replace("\n","\n"+"\t"*tab)
+            return strOut + self.applyStyle(input.strip()).replace("\n","\n"+"\t"*tab)
         
         if isinstance(input, dict):
             strOut = ""
-            for key in input:
-                entry = "\t"*tab + self.applyStyle(key, OutputWriter.msgType.ARGNAME) + "\n" + self.getFormattedString(input[key], tab+1) + "\n"
+            keys = input.keys()
+            lastIdx = len(keys)-1
+            for idx, key in enumerate(keys):
+                entry = "\t"*tab + self.applyStyle(key, OutputWriter.msgType.ARGNAME) + "\n" + self.inputParser(input[key], tab+1)
+                if idx != lastIdx:
+                    entry = entry + "\n"
                 strOut = strOut + entry
             return strOut
         
         if isinstance(input, tuple):
             argName, argValue = r
             strKey = self.applyStyle(argName, OutputWriter.msgType.ARGNAME)
-            strVal = self.getFormattedString(argValue, tab+1)
-            return strOut + strKey + str
+            strVal = self.inputParser(argValue, tab+1)
+            return strOut + f"{strKey:<{48}s} {strVal:<{6}s}"
         
         if isinstance(input, list):
             strOut = ""
-            for r in input:
+            lastIdx = len(input)-1
+            for idx,r in enumerate(input):
                 entry = "\t"*tab
                 if isinstance(r, tuple):
                     argName, argValue = r
                     strKey = self.applyStyle(argName, OutputWriter.msgType.ARGNAME)
-                    strVal = self.getFormattedString(argValue, tab+1)
-                    entry = strKey + "\n" + strVal
+                    strVal = self.inputParser(argValue, 0)
+                    entry = f"{strKey:<{48}s} {strVal:<{6}s}"
                 else:
                     entry = entry + self.applyStyle(str(r))
             
-                strOut = strOut + entry + "\n"
+                strOut = strOut + entry
+                if idx != lastIdx:
+                    strOut = strOut + "\n"
+
             return strOut
         
         return strOut + self.applyStyle(str(input))
@@ -249,14 +261,14 @@ class DnsComponent(EnumComponent):
             return None
     
     def dnsQuery(self, tryAll:bool=False):
-        results = []
+        results = {}
         for r in self.records:
             try:
                 result = self.resolver.resolve(self.domain,r)
                 record = [i.to_text() for i in result]
-                results.append((r, record))
             except DNSException:
-                 results.append((r, None))
+                 record = None
+            results[r] = record
         return results
 
 
@@ -312,6 +324,7 @@ class TraceComponent(EnumComponent):
 
 
 class SSLComponent(EnumComponent):
+
     class SSLAdapter(HTTPAdapter):
         def __init__(self, sslVersion=None, **kwargs):
             self.sslVersion = sslVersion
@@ -327,16 +340,41 @@ class SSLComponent(EnumComponent):
     def __init__(self, domain:str, port:int=443, outputWriter:OutputWriter=None):
         self.domain = domain
         self.port = port
+
+        self.ctx = ssl.create_default_context()
+        self.ctx.check_hostname = False
+        self.ctx.verify_mode = ssl.CERT_NONE
+        
         super().__init__("ssl","CERTIFICATE AND SSL",outputWriter)
 
     def getOpenSSLVersion():
         return ssl.OPENSSL_VERSION
+    
+    def getSupportedCiphers(self):
+        results = []
+        
+        #pickle fails when attempting to create a deep copy of SSLContext using copy.deepcopy.
+        #Had to do it the manual way
+        
+        tmpCtx = ssl.create_default_context()
+        tmpCtx.check_hostname = self.ctx.check_hostname
+        tmpCtx.verify_mode = self.ctx.verify_mode
 
+        for cipher in self.ctx.get_ciphers():
+            try:
+                tmpCtx.set_ciphers(cipher["name"])
+                with tmpCtx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
+                    sock.connect((self.domain, self.port))
+                results.append((cipher["name"], True))
+            except SSLError:
+                results.append((cipher["name"], False))
+            except:
+                results.append((cipher["name"], None))
+        return results
+
+    
     def certInfo(self):
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with ctx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
+        with self.ctx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
             sock.connect((self.domain, self.port))
             certDER = sock.getpeercert(True)
             sock.close()
@@ -392,7 +430,6 @@ class SSLComponent(EnumComponent):
             results.append((fname, self._testSSL(fvalue)))
         return results
     
-
 class HTTPComponent(EnumComponent):
     httpCodeDictionary = {
         200: "OK",
@@ -429,15 +466,10 @@ class HTTPComponent(EnumComponent):
         response = self.session.get(self.url)
         options = self.session.options(self.url)
 
-        httpVersion = response.raw.version
-        headers = dict(response.headers)
-        cookies = self.session.cookies
-        allowedMethods = options.headers["Allow"]
-
         return {
             "Response code": self.formatHTTPCode(response.status_code),
-            "HTTP version": self._formatHttpVersion(httpVersion),
-            "Methods": allowedMethods,
+            "HTTP version": self._formatHttpVersion(response.raw.version),
+            "Methods": options.headers["Allow"],
             "Headers": {k: [r.strip() for r in v.split(";") if r ] for k,v in response.headers.items()},
             "Cookies": {k.name: {
                             "Value": k.value,
@@ -585,8 +617,8 @@ if __name__ == '__main__':
     settings = Settings()
     ow = OutputWriter(settings)
     wc = WhoisComponent(settings.domain, settings.whoisServer, settings.whoisForceServer, outputWriter=ow)
-    print(ow.getBanner(wc))
-    print(ow.getFormattedString(wc.whois()))
+    #print(ow.getBanner(wc))
+    #print(ow.getFormattedString(wc.whois()))
     #print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois())
     dnsc = DnsComponent(settings.domain,outputWriter=ow)
     print(ow.getBanner(dnsc))
@@ -597,6 +629,7 @@ if __name__ == '__main__':
     sslc = SSLComponent(settings.domain,outputWriter=ow)
     print(ow.getBanner(sslc))
     print(ow.getFormattedString(sslc.checkSSL()))
+    print(ow.getFormattedString(sslc.getSupportedCiphers()))
     print(ow.getFormattedString(sslc.certInfo()))
     httpc = HTTPComponent(settings.url,ow)
     print(ow.getBanner(httpc))
