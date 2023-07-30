@@ -14,35 +14,69 @@ import time
 import argparse
 from datetime import datetime
 from enum import Enum
+from abc import ABC, abstractmethod
 from colorama import Fore, Back, Style, init as coloramaInit
-
-class EnumComponent():
-    def __init__(self, id:str, bannerName:str, outputWriter):
-        self.outputWriter = outputWriter
-        self.id = id
-        self.bannerName = bannerName
 
 
 class Settings():
     SECURE_SCHEME="https"
     DEFAULT_PORT=443
 
+    DEFAULT_DNS_SERVER = "8.8.8.8"
+    DEFAULT_DNS_RECORDS = ["A","AAAA","CNAME","PTR","MX","SOA","TXT"]
+
+    DEFAULT_TRACE_PORT = 33434
+    DEFAULT_TRACE_TTL = 30
+    DEFAULT_TRACE_TIMEOUT = 5
+
+    SEPARATOR = ","
+
     def __init__(self):
         parser = argparse.ArgumentParser(description='Enumerate information about a website')
         parser.add_argument("url")
-        parser.add_argument("--whois-server", action="append", help="Specify a whois server to use")
-        parser.add_argument("--whois-server-file", action="append", help="Specify a whois file to import. File must contain the domain and the server separated by space")
+        parser.add_argument("-a",default=None, type=str, action="append", help="Specify the modules to run")
+        parser.add_argument("-o",type=str, action="append", help="Path to output file")
+        parser.add_argument("--whois-server", type=str, action="append", help="WHOIS server to use")
+        parser.add_argument("--whois-server-file", type=str, action="append", help="WHOIS file to import. File must contain the domain and the server separated by space")
+        parser.add_argument("--dns-server", type=str, action="append", help="DNS server to use")
+        parser.add_argument("--dns-records", type=str, action="append", help="DNS records to query. Accepts multiple values separated by a comma")
+        parser.add_argument("--trace-port", type=int, action="append", help="port to use for tracing")
+        parser.add_argument("--trace-ttl", type=int, action="append", help="max number of hops")
+        parser.add_argument("--trace-timeout", type=int, action="append", help="Timeout in seconds")
+        parser.add_argument("--trace-show-gateway", action="store_true", help="Display local gateway in traceoute")
         args = vars(parser.parse_args())
 
+        self.operations = args["a"][0].split(",") if args["a"] else None
         self.url, self.domain, self.domainSimple, self.port, self.method = self._parseUrl(args["url"])
+        self.outputFile = self._parseInput(args, "o", None)
 
+        #------WHOIS PARAMS------
         self.whoisServer = None
         self.whoisForceServer = False
+
         if args["whois_server"]:
             self.whoisServer = args["whois_server"]
             self.whoisForceServer = True
         elif args["whois_server_file"]:
             self.whoisServer = args["whois_server_file"]
+
+        #-----DNS PARAMS------
+        self.dnsServer = self._parseInput(args, "dns_server", self.DEFAULT_DNS_SERVER)
+        self.dnsRecords = self._parseInput(args, "dns_records", self.DEFAULT_DNS_RECORDS, self.SEPARATOR)
+
+        #-----TRACE PARAMS------
+        self.tracePort = self._parseInput(args, "trace_port", self.DEFAULT_TRACE_PORT)
+        self.traceTtl = self._parseInput(args, "trace_ttl", self.DEFAULT_TRACE_TTL)
+        self.traceTimeout = self._parseInput(args, "trace_timeout", self.DEFAULT_TRACE_TIMEOUT)
+        self.traceShowGateway = args["trace_show_gateway"]
+
+    def _parseInput(self, args, key:str, altValue:str, sep:str=None):
+        if args[key]:
+            if sep:
+                return args[key][0].split(sep)
+            return args[key][0]
+        else:
+            return altValue
 
 
     def _parseUrl(self, url:str) -> tuple:
@@ -70,14 +104,26 @@ class Settings():
             urlNoParams,
             domain,
             domainSimple,
-            urlNoMethod[idxPort+1:] if idxPort > -1 else Settings.DEFAULT_PORT,
-            urlNoParams[:idxMethod] if idxMethod > -1 else Settings.SECURE_SCHEME
+            urlNoMethod[idxPort+1:] if idxPort > -1 else self.DEFAULT_PORT,
+            urlNoParams[:idxMethod] if idxMethod > -1 else self.SECURE_SCHEME
         )
   
     def _fileReader(targetList:list, path:str):
         with open(path, 'r') as f:
             for line in f:
                 targetList.append(tuple(line.split()))
+
+
+class EnumComponent(ABC):
+    def __init__(self, bannerName:str, settings:Settings, outputWriter):
+        self.settings = settings
+        self.outputWriter = outputWriter
+        self.bannerName = bannerName
+    
+    @abstractmethod
+    def getResult(self):
+        pass
+
 
 class OutputWriter():
     class msgType(Enum):
@@ -94,9 +140,14 @@ class OutputWriter():
     PLACEHOLDER_TRUE = "Yes"
     PLACEHOLDER_FALSE = "No"
 
+    INDENT = "    "
+
     def __init__(self, settings:Settings):
         self.rowSize = 120
         coloramaInit()
+
+    def getErrorString(self, input:str):
+        return self.applyStyle(input, OutputWriter.msgType.ERROR)
 
     def applyStyle(self, input:str, type=msgType.DEFAULT):
         if isinstance (input, bytes):
@@ -112,7 +163,7 @@ class OutputWriter():
         return "{}\n".format(self.inputParser(input,0))
 
     def inputParser(self, input, tab:int=0):
-        strOut = "\t"*tab
+        strOut = self.INDENT*tab
 
         if input is None:
             return strOut + self.applyStyle(OutputWriter.PLACEHOLDER_NONE, OutputWriter.msgType.ERROR)
@@ -126,19 +177,8 @@ class OutputWriter():
                 style = OutputWriter.msgType.SUCCESS
             return strOut + self.applyStyle(value, style)
         
-        if isinstance(input, str) or isinstance(input, bytes):
-            return strOut + self.applyStyle(input.strip()).replace("\n","\n"+"\t"*tab)
-        
-        if isinstance(input, dict):
-            strOut = ""
-            keys = input.keys()
-            lastIdx = len(keys)-1
-            for idx, key in enumerate(keys):
-                entry = "\t"*tab + self.applyStyle(key, OutputWriter.msgType.ARGNAME) + "\n" + self.inputParser(input[key], tab+1)
-                if idx != lastIdx:
-                    entry = entry + "\n"
-                strOut = strOut + entry
-            return strOut
+        if isinstance(input, (str, bytes)):
+            return strOut + self.applyStyle(input.strip()).replace("\n","\n"+self.INDENT*tab)
         
         if isinstance(input, tuple):
             argName, argValue = r
@@ -146,16 +186,27 @@ class OutputWriter():
             strVal = self.inputParser(argValue, tab+1)
             return strOut + f"{strKey:<{48}s} {strVal:<{6}s}"
         
+        if isinstance(input, dict):
+            strOut = ""
+            keys = input.keys()
+            lastIdx = len(keys)-1
+            for idx, key in enumerate(keys):
+                entry = self.INDENT*tab + self.applyStyle(key, OutputWriter.msgType.ARGNAME) + "\n" + self.inputParser(input[key], tab+1)
+                if idx != lastIdx:
+                    entry = entry + "\n"
+                strOut = strOut + entry
+            return strOut
+           
         if isinstance(input, list):
             strOut = ""
             lastIdx = len(input)-1
             for idx,r in enumerate(input):
-                entry = "\t"*tab
+                entry = self.INDENT*tab
                 if isinstance(r, tuple):
                     argName, argValue = r
                     strKey = self.applyStyle(argName, OutputWriter.msgType.ARGNAME)
                     strVal = self.inputParser(argValue, 0)
-                    entry = f"{strKey:<{48}s} {strVal:<{6}s}"
+                    entry = entry + f"{strKey:<{48}s} {strVal:<{6}s}"
                 else:
                     entry = entry + self.applyStyle(str(r))
             
@@ -195,13 +246,13 @@ class OutputWriter():
 
 
 class WhoisComponent(EnumComponent):
-    def __init__(self, domain:str, servers:list=None, force:bool=False, outputWriter:OutputWriter=None):
-        self.domain = domain
-        self.servers = servers
-        self.force = force
-        super().__init__("who","WHOIS RECORDS",outputWriter)
+    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+        super().__init__("WHOIS RECORDS",settings, outputWriter)
+        self.domain = settings.domain
+        self.servers = settings.whoisServer
+        self.force = settings.whoisForceServer
 
-    def whois(self):
+    def getResult(self):
         if self.servers:
             if self.force:
                 return self._whois(self.servers[0])
@@ -241,13 +292,13 @@ class WhoisComponent(EnumComponent):
 
 
 class DnsComponent(EnumComponent):
-    def __init__(self, domain:str, servers:list=["8.8.8.8","8.8.4.4"], records:list = ["A","AAAA","CNAME","PTR","MX","SOA","TXT"], outputWriter:OutputWriter=None):
-        self.domain = domain
-        self.servers = servers
-        self.records = records
+    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+        super().__init__("DNS RECORDS", settings, outputWriter)
+        self.domain = settings.domain
+        self.servers = settings.dnsServer
+        self.records = settings.dnsRecords
         self.resolver = dns.resolver.Resolver()
-        super().__init__("dns","DNS RECORDS",outputWriter)
-
+        
     def reverse(self,address):
          addr=dns.reversename.from_address(address).to_text()
          result = self.dnsSingleQuery(addr,"PTR")
@@ -260,7 +311,7 @@ class DnsComponent(EnumComponent):
         except DNSException:
             return None
     
-    def dnsQuery(self, tryAll:bool=False):
+    def getResult(self):
         results = {}
         for r in self.records:
             try:
@@ -273,16 +324,16 @@ class DnsComponent(EnumComponent):
 
 
 class TraceComponent(EnumComponent):
-    def __init__(self, dnsComponent:DnsComponent, domain:str, port:int=33434, ttl:int=30, timeout:int=2, showGateway:bool=False, outputWriter:OutputWriter=None):
-        self.dns = dnsComponent
-        self.domain = domain
-        self.port = port
-        self.ttl = ttl
-        self.timeout = timeout
-        self.showGateway = showGateway
-        super().__init__("trace","TRACEROUTE",outputWriter)
+    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+        super().__init__("TRACEROUTE", settings, outputWriter)
+        self.dns = DnsComponent(settings, ow)
+        self.domain = settings.domain
+        self.port = settings.tracePort
+        self.ttl = settings.traceTtl
+        self.timeout = settings.traceTimeout
+        self.showGateway = settings.traceShowGateway
 
-    def traceroute(self):
+    def getResult(self):
         rec = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
         snd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 
@@ -337,15 +388,22 @@ class SSLComponent(EnumComponent):
                                         block=block,
                                         ssl_version=self.sslVersion)
             
-    def __init__(self, domain:str, port:int=443, outputWriter:OutputWriter=None):
-        self.domain = domain
-        self.port = port
+    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+        self.domain = settings.domain
+        self.port = settings.port
 
         self.ctx = ssl.create_default_context()
         self.ctx.check_hostname = False
         self.ctx.verify_mode = ssl.CERT_NONE
         
-        super().__init__("ssl","CERTIFICATE AND SSL",outputWriter)
+        super().__init__("CERTIFICATE AND SSL", settings, outputWriter)
+
+    def getResult(self) -> dict:
+        return {
+                "OpenSSL version": SSLComponent.getOpenSSLVersion(),
+                "Secure protocols": self.checkSSL(),
+                "Supported ciphers": self.getSupportedCiphers(),
+                "Certificate details": self.certInfo()}
 
     def getOpenSSLVersion():
         return ssl.OPENSSL_VERSION
@@ -371,8 +429,7 @@ class SSLComponent(EnumComponent):
             except:
                 results.append((cipher["name"], None))
         return results
-
-    
+   
     def certInfo(self):
         with self.ctx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
             sock.connect((self.domain, self.port))
@@ -430,6 +487,7 @@ class SSLComponent(EnumComponent):
             results.append((fname, self._testSSL(fvalue)))
         return results
     
+
 class HTTPComponent(EnumComponent):
     httpCodeDictionary = {
         200: "OK",
@@ -451,10 +509,16 @@ class HTTPComponent(EnumComponent):
         505: "HTTP version not supported"
     }
 
-    def __init__(self, url:str, outputWriter:OutputWriter=None):
-        self.url = url
+    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+        self.url = settings.url
         self.session = requests.Session()
-        super().__init__("http","HTTP REQUESTS",outputWriter)
+        super().__init__("HTTP REQUESTS", settings, outputWriter)
+
+    def getResult(self) -> dict:
+        return {
+            "HTTP info": self.getHTTPinfo(),
+            "HTTP methods": self.testHTTPMethods()
+        }
 
     def formatHTTPCode(self, code:int) -> str:
         try:
@@ -469,7 +533,7 @@ class HTTPComponent(EnumComponent):
         return {
             "Response code": self.formatHTTPCode(response.status_code),
             "HTTP version": self._formatHttpVersion(response.raw.version),
-            "Methods": options.headers["Allow"],
+            "Methods": options.headers["Allow"] if "Allow" in options.headers.keys() else None,
             "Headers": {k: [r.strip() for r in v.split(";") if r ] for k,v in response.headers.items()},
             "Cookies": {k.name: {
                             "Value": k.value,
@@ -493,11 +557,10 @@ class HTTPComponent(EnumComponent):
     def _parseRequest(self, req, trim:int=80):
         status = req.status_code
         text = None
-        if status == 200:
-            if req.text:
-                text = req.text[:trim]+"..."
-            else:
-                text = "Empty response"
+        if req.text:
+            text = req.text[:trim]+"..."
+        else:
+            text = "EMPTY RESPONSE"
 
         return {
             "Code": self.formatHTTPCode(status),
@@ -523,115 +586,142 @@ class HTTPComponent(EnumComponent):
             "DELETE": self._parseRequest(deleteReq),
         }
 
+
+class WebEnumComponent(EnumComponent):
+    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+        super().__init__("WEBSITE ENUMERATION", settings, outputWriter)
+        self.url = settings.url
+        self.session = requests.Session()
+
+    def getFavicon(self):
+        response = self.session.get(self.url)
+        soup = BeautifulSoup(response.text,"html.parser")
+        return soup.find("link", rel="shortcut icon")
+
+    def getSitemap(self, extraUrls:list=None):
+        urls = ["sitemap","wp-sitemap","sitemap_index","post-sitemap","page-sitemap","pages-sitemap","category-sitemap","tag-sitemap"]
+
+        if extraUrls:
+            for url in extraUrls:
+                dict = self._sitemapReq(url)
+                if dict["location"]:
+                    return dict
+
+        for url in urls:
+            fullUrl = "{}/{}".format(self.url,url)
+            dict = self._sitemapReq(fullUrl)
+            if dict["location"]:
+                return dict
+        
+        return None
     
-def getRequests(domain,port=443,secure=True):
-    protocol = "https" if secure or port == 443 else "http"
-    session = requests.Session()
-    domain = "{}://{}:{}".format(protocol,domain,port)
-    response = session.get(domain)
-    options = session.options(domain).headers["Allow"]
-    soup = BeautifulSoup(response.text,"html.parser")
-    iconLink = soup.find("link", rel="shortcut icon")
-    
-    httpVersion = response.raw.version
+    def parseRobotsFile(self):
+        response = self.session.get(self.url+"/robots.txt")
+        robots = None
+        if(response.status_code == 200 and response.text):
+            robots = [l for l in response.text.splitlines() if l.strip()]
 
-    if httpVersion == 10:
-        httpVersion = "HTTP 1.0"
-    elif httpVersion == 11:
-        httpVersion = "HTTP 1.1"
+            sitemaps = []
+            allowedEntries = []
+            disallowedEntries = []
+            entries = {}
+            currentUa = "*"
 
-    response = session.get(domain+"/robots.txt")
-    robots = None
-    if(response.status_code == 200 and response.text):
-        robots = response.text
-        sitemapUrls = [i[9:] for i in robots.splitlines() if i.startswith("Sitemap: ")]
+            for l in robots:
+                if l.startswith("Sitemap"):
+                    sitemaps.append(l[9:])
+                if l.startswith("User-agent"):
+                    newUa = l[12:]
+                    if newUa != currentUa:
+                        entries["User Agent: {}".format(currentUa)] = {
+                            "Allowed entries": allowedEntries,
+                            "Disallowed entries:": disallowedEntries}
+                        currentUa = newUa
 
-    sitemap = getSitemap(domain, sitemapUrls)
+                if l.startswith("Allow"):
+                    allowedEntries.append(l[7:])
 
-    return {"code": response.status_code,
-            "httpVersion": httpVersion,
-            "options": options,
-            "headers": {k: [r.trim() for r in v.split(";") if r ] for k,v in response.headers.items()},
-            "cookies": session.cookies.get_dict(), 
-            "robots": robots,
-            "faviconPath": iconLink,
-            "sitemapLocation": sitemap["location"],
-            "sitemapType": sitemap["type"],
-            "sitemapEntries": sitemap["entries"]
+                if l.startswith("Disallow"):
+                    disallowedEntries.append(l[10:])
+            
+            #Store last entries
+            entries["User Agent: {}".format(currentUa)] = {
+                "Allowed entries": allowedEntries,
+                "Disallowed entries:": disallowedEntries  
             }
 
-def getSitemapReq(url:str):
+            return {
+                "Sitemap": sitemaps,
+                "Entries": entries
+            }
+
+    def getResult(self):
+        robots = self.parseRobotsFile()
+
+        return {
+            "Robots entries": robots,
+            "Sitemap entries": self.getSitemap(robots["Sitemap"]),
+            "Favicon": self.getFavicon()
+        }
+
+    def _sitemapReq(self,url:str):
         headers = {"User-Agent": "Googlebot/2.1"}
         sitemapType = None
         sitemapEntries = None
 
-        fullUrl = url+".txt"
-        r  = requests.get(url,headers=headers)
-        if r.status_code == 200 and r.text:
-            sitemapType = "xml"
-            soup = BeautifulSoup(r.text,features="xml")
-            sitemapTags = soup.find_all("sitemap")
-            sitemapEntries = []
-            
-            if sitemapTags:
-                sitemapType = sitemapType + " (sitemap)"
-            else:
-                sitemapType = sitemapType + " (urlset)"
-                sitemapTags = soup.find_all("urlset")
-            
-            for tag in sitemapTags:
-                    print(tag)
-                    for loc in tag.find_all("loc"):
-                        sitemapEntries.append(loc.text)
-
-            return {"type": sitemapType, "location": url, "entries": sitemapEntries}
+        if url.endswith(".xml"):
+            r  = self.session.get(url,headers=headers)
+            if r.status_code == 200 and r.text:
+                sitemapType = "xml"
+                soup = BeautifulSoup(r.text,features="xml")
+                sitemapTags = soup.find_all("sitemap")
+                sitemapEntries = []
+                
+                if sitemapTags:
+                    sitemapType = sitemapType + " (sitemap)"
+                else:
+                    sitemapType = sitemapType + " (urlset)"
+                    sitemapTags = soup.find_all("urlset")
+                
+                for tag in sitemapTags:
+                        for loc in tag.find_all("loc"):
+                            sitemapEntries.append(loc.text)      
+        else:
+            r  = requests.get(url,headers=headers)
+            if r.status_code == 200 and r.text:
+                sitemapType = "plaintext"
+                sitemapEntries = r.text.splitlines()
         
-        fullUrl = url+".txt"
-        r  = requests.get(fullUrl,headers=headers)
-        if r.status_code == 200 and r.text:
-            sitemapType = "plaintext"
-            sitemapEntries = r.text.splitlines()
-            return {"type": sitemapType, "location": fullUrl, "entries": sitemapEntries}
-        
-        return {"type": sitemapType, "location": None, "entries": sitemapEntries}
+        return {"type": sitemapType, "location": url, "entries": sitemapEntries}
 
-def getSitemap(domain:str, extraUrls:list=None):
-    urls = ["sitemap","wp-sitemap","sitemap_index","post-sitemap","page-sitemap","pages-sitemap","category-sitemap","tag-sitemap"]
-
-    if extraUrls:
-        for url in extraUrls:
-            dict = getSitemapReq(url)
-            if dict["location"]:
-                return dict
-
-    for url in urls:
-        fullUrl = domain+"/"+url
-        dict = getSitemapReq(fullUrl)
-        if dict["location"]:
-            return dict
-        
-    return {"type": None, "location": None, "entries": None}
-        
 
 if __name__ == '__main__':
     settings = Settings()
     ow = OutputWriter(settings)
-    wc = WhoisComponent(settings.domain, settings.whoisServer, settings.whoisForceServer, outputWriter=ow)
-    #print(ow.getBanner(wc))
-    #print(ow.getFormattedString(wc.whois()))
-    #print(WhoisComponent(domain,["whois.verisign-grs.com"]).whois())
-    dnsc = DnsComponent(settings.domain,outputWriter=ow)
-    print(ow.getBanner(dnsc))
-    print(ow.getFormattedString(dnsc.dnsQuery()))
-    #trc = TraceComponent(dnsc,settings.domain,outputWriter=ow)
-    #print(ow.getBanner(trc))
-    #print(ow.printTable(trc.traceroute(),["Hop","Address","Domain","Time (ms)"],[4,16,40,10]))
-    sslc = SSLComponent(settings.domain,outputWriter=ow)
-    print(ow.getBanner(sslc))
-    print(ow.getFormattedString(sslc.checkSSL()))
-    print(ow.getFormattedString(sslc.getSupportedCiphers()))
-    print(ow.getFormattedString(sslc.certInfo()))
-    httpc = HTTPComponent(settings.url,ow)
-    print(ow.getBanner(httpc))
-    print(ow.getFormattedString(httpc.getHTTPinfo()))
-    print(ow.getFormattedString(httpc.testHTTPMethods()))
+
+    enumComponents = {
+        "who":{"class": WhoisComponent, "printAsTable": False, "tableParams": None},
+        "dns":{"class": DnsComponent, "printAsTable": False, "tableParams": None},
+        "trace":{"class": TraceComponent, "printAsTable": True, "tableParams": (["Hop","Address","Domain","Time (ms)"],[4,16,40,10])},
+        "ssl": {"class": SSLComponent, "printAsTable": False, "tableParams": None},
+        "http": {"class": HTTPComponent, "printAsTable": False, "tableParams": None},
+        "web": {"class": WebEnumComponent, "printAsTable": False, "tableParams": None},
+    }
+
+    operations = settings.operations if settings.operations else enumComponents.keys()
+
+    for op in operations:
+        if op in enumComponents.keys():
+            component = enumComponents[op]["class"](settings)
+            printAsTable = enumComponents[op]["printAsTable"]
+            output = ""
+            if printAsTable:
+                cols, padding = enumComponents[op]["tableParams"]
+                output = ow.printTable(component.getResult(), cols, padding)
+            else:
+                output = ow.getFormattedString(component.getResult())
+            print(ow.getBanner(component))
+            print(output)
+        else:
+            print(ow.getErrorString("Unknown operation {}. Skipped".format(op)))
+        
