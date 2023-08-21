@@ -142,81 +142,109 @@ class OutputWriter():
 
     INDENT = "    "
 
+    TUPLE_ARG_NAME_PADDING = 32
+    TUPLE_ARG_VALUE_PADDING = 6
+    BANNER_PADDING = 10
+
     def __init__(self, settings:Settings):
         self.rowSize = 120
         coloramaInit()
 
+    def writeToFile(self, input:str):
+        return input
+
     def getErrorString(self, input:str):
         return self.applyStyle(input, OutputWriter.msgType.ERROR)
 
-    def applyStyle(self, input:str, type=msgType.DEFAULT):
+    def applyStyle(self, input:str, type=msgType.DEFAULT, indent:int=0):
         if isinstance (input, bytes):
             try:
                 input = input.decode()
             except:
                 input = str(input)
+        
+        input.strip()
+        addNewline = not input.endswith("\n")
+
+        if indent > 0:
+            if input.count("\n") > 0:
+                input = self.INDENT*indent + input.replace("\n","\n"+self.INDENT*indent)
+            else:
+                input = self.INDENT*indent + input
+
+        self.writeToFile(input+"\n" if addNewline else input)
+
 
         fore, back, style = type.value[0]
-        return "{}{}{}{}{}".format(fore, back, style, input.strip(), OutputWriter.msgType.END.value)
+        return "{}{}{}{}{}{}".format(fore, back, style, input, OutputWriter.msgType.END.value, "\n" if addNewline else "")
+    
+    def applyStyleTuple(self, input:tuple, indent:int):
+        argName, argValue = input
+        strValue = self._toStr(argValue)
+        plainString = (
+            f"{self.INDENT*indent}"
+            f"{argName:<{self.TUPLE_ARG_NAME_PADDING}s}"
+            f"{strValue:<{self.TUPLE_ARG_VALUE_PADDING}s}\n"
+            )
+        
+        foreArg, backArg, styleArg = OutputWriter.msgType.ARGNAME.value[0]
+        foreVal, backVal, styleVal = OutputWriter.msgType.DEFAULT.value[0]
+
+        styledString = (
+            f"{self.INDENT*indent}"
+            f"{foreArg}{backArg}{styleArg}"
+            f"{argName:<{self.TUPLE_ARG_NAME_PADDING}s}"
+            f"{OutputWriter.msgType.END.value}"
+            f"{foreVal}{backVal}{styleVal}"
+            f"{strValue:<{self.TUPLE_ARG_VALUE_PADDING}s}"
+            f"{OutputWriter.msgType.END.value}"
+            f"\n"
+            )
+        
+        self.writeToFile(plainString)
+        return styledString
 
     def getFormattedString(self, input):
         return "{}\n".format(self.inputParser(input,0))
 
-    def inputParser(self, input, tab:int=0):
-        strOut = self.INDENT*tab
-
+    def inputParser(self, input, indent:int=0, extraNewline=False):
+        strOut = ""
         if input is None:
-            return strOut + self.applyStyle(OutputWriter.PLACEHOLDER_NONE, OutputWriter.msgType.ERROR)
+            strOut = self.applyStyle(OutputWriter.PLACEHOLDER_NONE, OutputWriter.msgType.ERROR, indent)
         
-        if isinstance(input, bool):
+        elif isinstance(input, bool):
             value = OutputWriter.PLACEHOLDER_FALSE
             style = OutputWriter.msgType.ERROR
             
             if input == True:
                 value = OutputWriter.PLACEHOLDER_TRUE
                 style = OutputWriter.msgType.SUCCESS
-            return strOut + self.applyStyle(value, style)
+            strOut = self.applyStyle(value, style, indent)
         
-        if isinstance(input, (str, bytes)):
-            return strOut + self.applyStyle(input.strip()).replace("\n","\n"+self.INDENT*tab)
-        
-        if isinstance(input, tuple):
-            argName, argValue = r
-            strKey = self.applyStyle(argName, OutputWriter.msgType.ARGNAME)
-            strVal = self.inputParser(argValue, tab+1)
-            return strOut + f"{strKey:<{48}s} {strVal:<{6}s}"
-        
-        if isinstance(input, dict):
-            strOut = ""
+        elif isinstance(input, (str, bytes)):
+            strOut = self.applyStyle(input, indent=indent)
+
+        elif isinstance(input, dict):
             keys = input.keys()
             lastIdx = len(keys)-1
             for idx, key in enumerate(keys):
-                entry = self.INDENT*tab + self.applyStyle(key, OutputWriter.msgType.ARGNAME) + "\n" + self.inputParser(input[key], tab+1)
-                if idx != lastIdx:
-                    entry = entry + "\n"
-                strOut = strOut + entry
-            return strOut
-           
-        if isinstance(input, list):
+                strOut += self.applyStyle(key, OutputWriter.msgType.ARGNAME, indent) + self.inputParser(input[key], indent+1, idx != lastIdx)     
+
+        elif isinstance(input, list):
             strOut = ""
             lastIdx = len(input)-1
             for idx,r in enumerate(input):
-                entry = self.INDENT*tab
                 if isinstance(r, tuple):
-                    argName, argValue = r
-                    strKey = self.applyStyle(argName, OutputWriter.msgType.ARGNAME)
-                    strVal = self.inputParser(argValue, 0)
-                    entry = entry + f"{strKey:<{48}s} {strVal:<{6}s}"
+                    strOut += self.applyStyleTuple(r,indent)
                 else:
-                    entry = entry + self.applyStyle(str(r))
-            
-                strOut = strOut + entry
-                if idx != lastIdx:
-                    strOut = strOut + "\n"
+                    strOut += self.applyStyle(str(r),indent=indent)
+        else:
+            strOut = self.applyStyle(str(input),indent=indent)
 
+        if extraNewline:
+            return strOut+"\n"
+        else:
             return strOut
-        
-        return strOut + self.applyStyle(str(input))
     
     def printTable(self, rows:list, cols:list, padding:list):
         sep = "| "
@@ -238,11 +266,17 @@ class OutputWriter():
         return self.applyStyle(header + sepRow + body + sepRow)
 
     def getBanner(self, component:EnumComponent):
-        banner = "="*5+component.bannerName+"="*5
-        return "\n"+self.applyStyle(banner,OutputWriter.msgType.BANNER)+"\n"
+        banner = "="*self.BANNER_PADDING + component.bannerName + "="*self.BANNER_PADDING
+        return self.applyStyle(banner,OutputWriter.msgType.BANNER)
     
-    def writeToFile(self):
-        pass
+    def _toStr(self, input) -> str:
+        if input == None:
+            return self.PLACEHOLDER_NONE
+        if input == True:
+            return self.PLACEHOLDER_TRUE
+        if input == False:
+            return self.PLACEHOLDER_FALSE
+        return input
 
 
 class WhoisComponent(EnumComponent):
