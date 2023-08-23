@@ -6,7 +6,7 @@ import ssl
 from ssl import SSLError
 import OpenSSL
 from OpenSSL import crypto
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 from urllib3 import PoolManager
 import requests
 from requests.adapters import HTTPAdapter
@@ -148,10 +148,16 @@ class OutputWriter():
 
     def __init__(self, settings:Settings):
         self.rowSize = 120
+        self.outputFile = open(settings.outputFile, "w") if settings.outputFile else None
         coloramaInit()
 
+    def closeResources(self):
+        if self.outputFile:
+            self.outputFile.close()
+
     def writeToFile(self, input:str):
-        return input
+        if self.outputFile:
+            self.outputFile.write(input)
 
     def getErrorString(self, input:str):
         return self.applyStyle(input, OutputWriter.msgType.ERROR)
@@ -226,18 +232,23 @@ class OutputWriter():
 
         elif isinstance(input, dict):
             keys = input.keys()
-            lastIdx = len(keys)-1
-            for idx, key in enumerate(keys):
-                strOut += self.applyStyle(key, OutputWriter.msgType.ARGNAME, indent) + self.inputParser(input[key], indent+1, idx != lastIdx)     
+            if len(keys) > 0:
+                lastIdx = len(keys)-1
+                for idx, key in enumerate(keys):
+                    strOut += self.applyStyle(key, OutputWriter.msgType.ARGNAME, indent) + self.inputParser(input[key], indent+1, idx != lastIdx)
+            else:
+                strOut = self.inputParser(None,indent)
 
         elif isinstance(input, list):
-            strOut = ""
-            lastIdx = len(input)-1
-            for idx,r in enumerate(input):
-                if isinstance(r, tuple):
-                    strOut += self.applyStyleTuple(r,indent)
-                else:
-                    strOut += self.applyStyle(str(r),indent=indent)
+            if len(input) > 0:
+                lastIdx = len(input)-1
+                for idx,r in enumerate(input):
+                    if isinstance(r, tuple):
+                        strOut += self.applyStyleTuple(r,indent)
+                    else:
+                        strOut += self.inputParser(r,indent)
+            else:
+                strOut = self.inputParser(None,indent)
         else:
             strOut = self.applyStyle(str(input),indent=indent)
 
@@ -638,13 +649,13 @@ class WebEnumComponent(EnumComponent):
         if extraUrls:
             for url in extraUrls:
                 dict = self._sitemapReq(url)
-                if dict["location"]:
+                if dict["Location"]:
                     return dict
 
         for url in urls:
             fullUrl = "{}/{}".format(self.url,url)
             dict = self._sitemapReq(fullUrl)
-            if dict["location"]:
+            if dict["Location"]:
                 return dict
         
         return None
@@ -690,12 +701,23 @@ class WebEnumComponent(EnumComponent):
             }
 
     def getResult(self):
+        response = self.session.get(self.url, allow_redirects=True)
+        soup = BeautifulSoup(response.text,"html.parser")
+        favicon = soup.find("link", rel="shortcut icon")
         robots = self.parseRobotsFile()
-
+    
         return {
+            "Title": soup.head.title.string,
+            "Favicon": favicon["href"] if favicon else None,
+            "HTML params": soup.find("html").attrs,
+            "Meta Tags": soup.find_all("meta"),
+            "Included scripts": [script["src"] for script in soup.find_all("script",{"src":True})],
+            "Included stylesheets": [link["href"] for link in soup.find_all("link", rel="stylesheet")],
             "Robots entries": robots,
             "Sitemap entries": self.getSitemap(robots["Sitemap"]),
-            "Favicon": self.getFavicon()
+            "Page links": list(set([link["href"] for link in soup.find_all("a",{"href":True})])),
+            "Comments": [line.strip() for line in soup.find_all(string = lambda text: isinstance(text,Comment)) if line.strip()]
+            
         }
 
     def _sitemapReq(self,url:str):
@@ -726,7 +748,7 @@ class WebEnumComponent(EnumComponent):
                 sitemapType = "plaintext"
                 sitemapEntries = r.text.splitlines()
         
-        return {"type": sitemapType, "location": url, "entries": sitemapEntries}
+        return {"Type": sitemapType, "Location": url, "Entries": sitemapEntries}
 
 
 if __name__ == '__main__':
@@ -748,14 +770,16 @@ if __name__ == '__main__':
         if op in enumComponents.keys():
             component = enumComponents[op]["class"](settings)
             printAsTable = enumComponents[op]["printAsTable"]
+            compBanner = ow.getBanner(component)
             output = ""
             if printAsTable:
                 cols, padding = enumComponents[op]["tableParams"]
                 output = ow.printTable(component.getResult(), cols, padding)
             else:
                 output = ow.getFormattedString(component.getResult())
-            print(ow.getBanner(component))
+            print(compBanner)
             print(output)
         else:
             print(ow.getErrorString("Unknown operation {}. Skipped".format(op)))
+    ow.closeResources()
         
