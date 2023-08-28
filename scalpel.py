@@ -12,6 +12,8 @@ import requests
 from requests.adapters import HTTPAdapter
 import time
 import argparse
+import subprocess
+from subprocess import CalledProcessError, TimeoutExpired
 from datetime import datetime
 from enum import Enum
 from abc import ABC, abstractmethod
@@ -44,6 +46,7 @@ class Settings():
         parser.add_argument("--trace-ttl", type=int, action="append", help="max number of hops")
         parser.add_argument("--trace-timeout", type=int, action="append", help="Timeout in seconds")
         parser.add_argument("--trace-show-gateway", action="store_true", help="Display local gateway in traceoute")
+        parser.add_argument("--ssl-use-os-library", action="store_true", help="Use the openssl library included in your Linux distribution instead of the one packaged in python")
         args = vars(parser.parse_args())
 
         self.operations = args["a"][0].split(",") if args["a"] else None
@@ -69,6 +72,9 @@ class Settings():
         self.traceTtl = self._parseInput(args, "trace_ttl", self.DEFAULT_TRACE_TTL)
         self.traceTimeout = self._parseInput(args, "trace_timeout", self.DEFAULT_TRACE_TIMEOUT)
         self.traceShowGateway = args["trace_show_gateway"]
+
+        #-----SSL PARAMS------
+        self.useOsLibrary = args["ssl_use_os_library"]
 
     def _parseInput(self, args, key:str, altValue:str, sep:str=None):
         if args[key]:
@@ -104,7 +110,7 @@ class Settings():
             urlNoParams,
             domain,
             domainSimple,
-            urlNoMethod[idxPort+1:] if idxPort > -1 else self.DEFAULT_PORT,
+            int(urlNoMethod[idxPort+1:]) if idxPort > -1 else self.DEFAULT_PORT,
             urlNoParams[:idxMethod] if idxMethod > -1 else self.SECURE_SCHEME
         )
   
@@ -436,6 +442,7 @@ class SSLComponent(EnumComponent):
     def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
         self.domain = settings.domain
         self.port = settings.port
+        self.useOsLibrary = settings.useOsLibrary
 
         self.ctx = ssl.create_default_context()
         self.ctx.check_hostname = False
@@ -444,36 +451,112 @@ class SSLComponent(EnumComponent):
         super().__init__("CERTIFICATE AND SSL", settings, outputWriter)
 
     def getResult(self) -> dict:
+        results = self._getSSLInfoExt() if self.useOsLibrary else self._getSSLInfo()
         return {
-                "OpenSSL version": SSLComponent.getOpenSSLVersion(),
-                "Secure protocols": self.checkSSL(),
-                "Supported ciphers": self.getSupportedCiphers(),
+                "OpenSSL version": results["version"],
+                "Secure protocols": results["proto"],
+                "Supported ciphers": results["ciphers"],
                 "Certificate details": self.certInfo()}
-
-    def getOpenSSLVersion():
-        return ssl.OPENSSL_VERSION
     
-    def getSupportedCiphers(self):
-        results = []
-        
-        #pickle fails when attempting to create a deep copy of SSLContext using copy.deepcopy.
-        #Had to do it the manual way
+    def _getSSLInfo(self):
+        proto = []
+        ciphers = []
+
+        #pickle fails when attempting to create a deep copy of SSLContext using copy.deepcopy
+        #so I have to do it the manual way
         
         tmpCtx = ssl.create_default_context()
         tmpCtx.check_hostname = self.ctx.check_hostname
         tmpCtx.verify_mode = self.ctx.verify_mode
+
+        formats = [
+                    ("SSL 2.0", ssl.PROTOCOL_SSLv2 if hasattr(ssl,"PROTOCOL_SSLv2") else None),
+                    ("SSL 3.0", ssl.PROTOCOL_SSLv3 if hasattr(ssl,"PROTOCOL_SSLv3") else None),
+                    ("SSL Any", ssl.PROTOCOL_SSLv23 if hasattr(ssl,"PROTOCOL_SSLv23") else None),
+                    ("TLS 1.0", ssl.PROTOCOL_TLSv1 if hasattr(ssl,"PROTOCOL_TLSv1") else None),
+                    ("TLS 1.1", ssl.PROTOCOL_TLSv1_1 if hasattr(ssl,"PROTOCOL_TLSv1_1") else None),
+                    ("TLS 1.2", ssl.PROTOCOL_TLSv1_2 if hasattr(ssl,"PROTOCOL_TLSv1_2") else None),
+                    ("TLS 1.3", ssl.PROTOCOL_TLSv1_3 if hasattr(ssl,"PROTOCOL_TLSv1_3") else None)
+                ]      
+        
+        for f in formats:
+            fname, fvalue = f
+            if fvalue:
+                proto.append((fname, self._testSSL(fvalue)))
+            else:
+                proto.append((fname, "Unsupported client side"))
 
         for cipher in self.ctx.get_ciphers():
             try:
                 tmpCtx.set_ciphers(cipher["name"])
                 with tmpCtx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
                     sock.connect((self.domain, self.port))
-                results.append((cipher["name"], True))
+                ciphers.append((cipher["name"], True))
             except SSLError:
-                results.append((cipher["name"], False))
+                ciphers.append((cipher["name"], False))
             except:
-                results.append((cipher["name"], None))
-        return results
+                ciphers.append((cipher["name"], None))
+
+        return {
+            "version": ssl.OPENSSL_VERSION,
+            "proto": proto,
+            "ciphers":ciphers
+        }
+    
+    def _getSSLInfoExt(self):
+        version = subprocess.run(["openssl", "version"], capture_output = True).stdout.decode("UTF-8")
+        ciphers = subprocess.run(["openssl", "ciphers", "ALL"], capture_output = True).stdout.decode("UTF-8").strip().split(":")
+        formats = [
+                    ("SSLv2", "-ssl2"),
+                    ("SSLv3", "-ssl3"),
+                    ("TLSv1", "-tls1"),
+                    ("TLSv1.1", "-tls1_1"),
+                    ("TLSv1.2", "-tls1_2"),
+                    ("TLSv1.3", "-tls1_3")
+                ] 
+        
+        proto = []
+        supportedCiphers = []
+        
+        for f in formats:
+            fname, switch = f
+            res, motivation = self._runSubprocess(switch,False)
+            if res:
+                proto.append((fname, True))
+            else:
+                proto.append((fname, motivation if motivation else False))
+
+        for c in ciphers:
+            res, motivation = self._runSubprocess(c, True)
+            if res:
+                supportedCiphers.append((c, True))
+            else:
+                supportedCiphers.append((c, motivation if motivation else False))
+
+        return {
+            "version": version,
+            "proto": proto,
+            "ciphers": supportedCiphers
+        }
+    
+    def _runSubprocess(self, input:str, isCipher:bool):
+        try:
+            if isCipher:
+                cmd = subprocess.run(f"openssl s_client -cipher {input} -connect {self.domain}:{self.port} </dev/null", shell=True, capture_output = True, timeout=10)
+            else:
+                cmd = subprocess.run(f"openssl s_client -connect {self.domain}:{self.port} {input} </dev/null", shell=True, capture_output = True, timeout=10)
+            
+            if cmd.returncode == 0:
+                return (True, None)
+            else:
+                err = cmd.stderr.decode("UTF-8").strip()
+                if err.find("no protocols available") > -1 or err.find("unknown option") > -1 or err.find("no cipher match") > -1:
+                    return (False, "Unsupported client side")
+                else:
+                    return (False, None)
+        except TimeoutExpired:
+            return (False, "Timeout")
+
    
     def certInfo(self):
         with self.ctx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
@@ -518,19 +601,6 @@ class SSLComponent(EnumComponent):
             return True
         except:
             return False
-
-    def checkSSL(self):
-        results = []
-        formats = [
-                    ("SSL 3.0", ssl.PROTOCOL_SSLv23),
-                    ("TLS 1.0", ssl.PROTOCOL_TLSv1),
-                    ("TLS 1.1", ssl.PROTOCOL_TLSv1_1),
-                    ("TLS 1.2", ssl.PROTOCOL_TLSv1_2)
-                ]      
-        for f in formats:
-            fname, fvalue = f
-            results.append((fname, self._testSSL(fvalue)))
-        return results
     
 
 class HTTPComponent(EnumComponent):
