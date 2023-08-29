@@ -33,6 +33,9 @@ class Settings():
 
     SEPARATOR = ","
 
+    WHOIS_FILE_COMMENT = ";"
+    WHOIS_FILE_URL = "https://www.nirsoft.net/whois-servers.txt"
+
     def __init__(self):
         parser = argparse.ArgumentParser(description='Enumerate information about a website')
         parser.add_argument("url")
@@ -40,6 +43,7 @@ class Settings():
         parser.add_argument("-o",type=str, action="append", help="Path to output file")
         parser.add_argument("--whois-server", type=str, action="append", help="WHOIS server to use")
         parser.add_argument("--whois-server-file", type=str, action="append", help="WHOIS file to import. File must contain the domain and the server separated by space")
+        parser.add_argument("--whois-get-servers", type=str, action="append", help="Downloads and save a list of whois servers to the specified file")
         parser.add_argument("--dns-server", type=str, action="append", help="DNS server to use")
         parser.add_argument("--dns-records", type=str, action="append", help="DNS records to query. Accepts multiple values separated by a comma")
         parser.add_argument("--trace-port", type=int, action="append", help="port to use for tracing")
@@ -55,13 +59,19 @@ class Settings():
 
         #------WHOIS PARAMS------
         self.whoisServer = None
-        self.whoisForceServer = False
+        self.whoisFromFile = False
 
         if args["whois_server"]:
-            self.whoisServer = args["whois_server"]
-            self.whoisForceServer = True
+            self.whoisServer = args["whois_server"][0]
         elif args["whois_server_file"]:
-            self.whoisServer = args["whois_server_file"]
+            self.whoisServer = []
+            self._fileReader(self.whoisServer, args["whois_server_file"][0], self.WHOIS_FILE_COMMENT)
+            self.whoisFromFile = True
+        elif args["whois_get_servers"]:
+            self.whoisServer = []
+            dest = args["whois_get_servers"][0]
+            self._downloadFile(self.WHOIS_FILE_URL, dest)
+            self._fileReader(self.whoisServer, dest, self.WHOIS_FILE_COMMENT)
 
         #-----DNS PARAMS------
         self.dnsServer = self._parseInput(args, "dns_server", self.DEFAULT_DNS_SERVER)
@@ -91,7 +101,6 @@ class Settings():
         idxParams = url.find("?")
         urlNoParams = url[:idxParams] if idxParams > 0 else url 
         
-
         idxMethod = urlNoParams.find("://")
         urlNoMethod = urlNoParams[idxMethod+3:] if idxMethod > 0 else urlNoParams
 
@@ -114,10 +123,15 @@ class Settings():
             urlNoParams[:idxMethod] if idxMethod > -1 else self.SECURE_SCHEME
         )
   
-    def _fileReader(targetList:list, path:str):
+    def _fileReader(self, targetList:list, path:str, comment:str=None):
         with open(path, 'r') as f:
             for line in f:
-                targetList.append(tuple(line.split()))
+                if not comment or (comment and not line.startswith(comment)):
+                    targetList.append(tuple(line.split()))
+
+    def _downloadFile(self, url:str, dest:str):
+        r = requests.get(url, allow_redirects=True)
+        open(dest, "wb").write(r.content)
 
 
 class EnumComponent(ABC):
@@ -299,29 +313,32 @@ class OutputWriter():
 class WhoisComponent(EnumComponent):
     def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
         super().__init__("WHOIS RECORDS",settings, outputWriter)
-        self.domain = settings.domain
+        self.domain = settings.domainSimple
         self.servers = settings.whoisServer
-        self.force = settings.whoisForceServer
 
     def getResult(self):
-        if self.servers:
-            if self.force:
-                return self._whois(self.servers[0])
-            else:
+        if self.servers:    
+            if isinstance(self.servers, list):
                 server = self._pickServer()
+                print("a"+str(server))
                 if server:
                     return self._whois(server)
+                else:
+                    return None
+            return self._whois(self.servers)
         return self._whoisIana()
         
     def _pickServer(self):
-        ext = self.domain[self.domain.rfind("."):]
+        domain = self.domain[self.domain.find(".")+1:]
+        print(domain+"-"+str(self.servers))
         for server in self.servers:
-            if server[0] == ext:
-                return server[0]
+            ext, whoisServer = server
+            if ext == domain:
+                return whoisServer
         return None
 
     def _whoisIana(self):
-        request = "https://www.iana.org/whois?q={}".format(self.domain)
+        request = f"https://www.iana.org/whois?q={self.domain}"
         response = requests.get(request).text
         return response[response.find("<pre>")+5:response.rfind("</pre>")]
     
