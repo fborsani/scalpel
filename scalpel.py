@@ -13,6 +13,7 @@ from requests.adapters import HTTPAdapter
 import time
 import argparse
 import subprocess
+import platform
 from subprocess import CalledProcessError, TimeoutExpired
 from datetime import datetime
 from enum import Enum
@@ -278,7 +279,8 @@ class OutputWriter():
             return strOut
     
     def printTable(self, rows:list, cols:list, padding:list):
-        sep = "| "
+        sep = "|"
+        sepPadding = 1
         tableLen = sum(padding) + len(sep) * (len(cols)+1)
         sepRow = "\n" + "-" * tableLen
 
@@ -286,12 +288,13 @@ class OutputWriter():
         body = ""
 
         for c in range(0,len(cols)):
-            header += sep + f"{cols[c]:<{padding[c]}s}"
+            header += sep  + f"{' '+cols[c]:<{padding[c]}s}"
+        header += sep
 
         for r in rows:
             row = sep
             for i in range(0,len(cols)):
-                row += f"{r[i]:<{padding[i]}s}"+sep
+                row += f"{' '+r[i]:<{padding[i]}s}"+sep
             body += "\n" + row
 
         return self.applyStyle(header + sepRow + body + sepRow)
@@ -406,8 +409,8 @@ class TraceComponent(EnumComponent):
         snd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 
         destAddress = self.dns.dnsSingleQuery(self.domain,"A")
-        if len(destAddress) == 0:
-            return None
+        if destAddress is None or len(destAddress) == 0:
+            raise requests.exceptions.ConnectionError
         destAddress = destAddress[0]
 
         currAddress = ""
@@ -506,13 +509,16 @@ class SSLComponent(EnumComponent):
         for cipher in self.ctx.get_ciphers():
             try:
                 tmpCtx.set_ciphers(cipher["name"])
-                with tmpCtx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
+                sc = socket.socket()
+                sc.settimeout(5)
+
+                with tmpCtx.wrap_socket(sc, server_hostname=self.domain) as sock:
                     sock.connect((self.domain, self.port))
                 ciphers.append((cipher["name"], True))
             except SSLError:
                 ciphers.append((cipher["name"], False))
-            except:
-                ciphers.append((cipher["name"], None))
+            except socket.error as e:
+                ciphers.append((cipher["name"], "Timeout"))
 
         return {
             "version": ssl.OPENSSL_VERSION,
@@ -521,8 +527,12 @@ class SSLComponent(EnumComponent):
         }
     
     def _getSSLInfoExt(self):
-        version = subprocess.run(["openssl", "version"], capture_output = True).stdout.decode("UTF-8")
-        ciphers = subprocess.run(["openssl", "ciphers", "ALL"], capture_output = True).stdout.decode("UTF-8").strip().split(":")
+        cmdRoot = "openssl"
+        if platform.system() == "Windows":
+            cmdRoot = "openssl.exe"
+
+        version = subprocess.run([cmdRoot, "version"], capture_output = True).stdout.decode("UTF-8")
+        ciphers = subprocess.run([cmdRoot, "ciphers", "ALL"], capture_output = True).stdout.decode("UTF-8").strip().split(":")
         formats = [
                     ("SSLv2", "-ssl2"),
                     ("SSLv3", "-ssl3"),
@@ -537,14 +547,14 @@ class SSLComponent(EnumComponent):
         
         for f in formats:
             fname, switch = f
-            res, motivation = self._runSubprocess(switch,False)
+            res, motivation = self._runSubprocess(cmdRoot, switch, False)
             if res:
                 proto.append((fname, True))
             else:
                 proto.append((fname, motivation if motivation else False))
 
         for c in ciphers:
-            res, motivation = self._runSubprocess(c, True)
+            res, motivation = self._runSubprocess(cmdRoot, c, True)
             if res:
                 supportedCiphers.append((c, True))
             else:
@@ -556,12 +566,12 @@ class SSLComponent(EnumComponent):
             "ciphers": supportedCiphers
         }
     
-    def _runSubprocess(self, input:str, isCipher:bool):
+    def _runSubprocess(self,cmdRoot:str, input:str, isCipher:bool):
         try:
             if isCipher:
-                cmd = subprocess.run(f"openssl s_client -cipher {input} -connect {self.domain}:{self.port} </dev/null", shell=True, capture_output = True, timeout=10)
+                cmd = subprocess.run(f"{cmdRoot} s_client -cipher {input} -connect {self.domain}:{self.port} </dev/null", shell=True, capture_output = True, timeout=5)
             else:
-                cmd = subprocess.run(f"openssl s_client -connect {self.domain}:{self.port} {input} </dev/null", shell=True, capture_output = True, timeout=10)
+                cmd = subprocess.run(f"{cmdRoot} s_client -connect {self.domain}:{self.port} {input} </dev/null", shell=True, capture_output = True, timeout=5)
             
             if cmd.returncode == 0:
                 return (True, None)
@@ -845,7 +855,7 @@ if __name__ == '__main__':
     enumComponents = {
         "who":{"class": WhoisComponent, "printAsTable": False, "tableParams": None},
         "dns":{"class": DnsComponent, "printAsTable": False, "tableParams": None},
-        "trace":{"class": TraceComponent, "printAsTable": True, "tableParams": (["Hop","Address","Domain","Time (ms)"],[4,16,40,10])},
+        "trace":{"class": TraceComponent, "printAsTable": True, "tableParams": (["Hop","Address","Domain","Time (ms)"],[6,20,40,12])},
         "ssl": {"class": SSLComponent, "printAsTable": False, "tableParams": None},
         "http": {"class": HTTPComponent, "printAsTable": False, "tableParams": None},
         "web": {"class": WebEnumComponent, "printAsTable": False, "tableParams": None},
@@ -854,19 +864,29 @@ if __name__ == '__main__':
     operations = settings.operations if settings.operations else enumComponents.keys()
 
     for op in operations:
-        if op in enumComponents.keys():
-            component = enumComponents[op]["class"](settings)
-            printAsTable = enumComponents[op]["printAsTable"]
-            compBanner = ow.getBanner(component)
-            output = ""
-            if printAsTable:
-                cols, padding = enumComponents[op]["tableParams"]
-                output = ow.printTable(component.getResult(), cols, padding)
+        try:
+            if op in enumComponents.keys():
+                component = enumComponents[op]["class"](settings)
+                printAsTable = enumComponents[op]["printAsTable"]
+                compBanner = ow.getBanner(component)
+                output = ""
+                if printAsTable:
+                    cols, padding = enumComponents[op]["tableParams"]
+                    output = ow.printTable(component.getResult(), cols, padding)
+                else:
+                    output = ow.getFormattedString(component.getResult())
+                print(compBanner)
+                print(output)
             else:
-                output = ow.getFormattedString(component.getResult())
-            print(compBanner)
-            print(output)
-        else:
-            print(ow.getErrorString("Unknown operation {}. Skipped".format(op)))
-    ow.closeResources()
+                print(ow.getErrorString(f"Unknown operation {op}. Skipped"))
+        except requests.exceptions.Timeout:
+            print(ow.getErrorString("Request timeout"))
+        except requests.exceptions.TooManyRedirects:
+            print(ow.getErrorString("Too many redirects"))
+        except (socket.error, requests.exceptions.ConnectionError):
+            print(ow.getErrorString("Destination is unreachable.\nVerify the supplied url and the eventual addresses of services to query and retry"))
+        except OSError:
+            print(ow.getErrorString("Too many redirects"))
+        finally:
+            ow.closeResources()
         
