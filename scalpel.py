@@ -1,10 +1,8 @@
 import dns
 from dns import resolver
 from dns.exception import DNSException
-import socket
-import ssl
+import socket, ssl, OpenSSL
 from ssl import SSLError
-import OpenSSL
 from OpenSSL import crypto
 from bs4 import BeautifulSoup, Comment
 from urllib3 import PoolManager
@@ -13,8 +11,8 @@ from requests.adapters import HTTPAdapter
 import time
 import argparse
 import subprocess
-import platform
-from subprocess import CalledProcessError, TimeoutExpired
+import os, ctypes, platform
+from subprocess import TimeoutExpired
 from datetime import datetime
 from enum import Enum
 from abc import ABC, abstractmethod
@@ -146,6 +144,14 @@ class EnumComponent(ABC):
         pass
 
 
+class EnumException(Exception):
+    def __init__(self, module:EnumComponent, message:str, originalException:Exception):
+        self.message = message
+        self.module = module
+        self.fullErrStr = f"{module.bannerName}: {message}"
+        super().__init__(originalException)
+
+
 class OutputWriter():
     class msgType(Enum):
         DEFAULT = (Fore.GREEN,"",""),
@@ -167,10 +173,13 @@ class OutputWriter():
     TUPLE_ARG_VALUE_PADDING = 6
     BANNER_PADDING = 10
 
-    def __init__(self, settings:Settings):
+    def __init__(self):
         self.rowSize = 120
-        self.outputFile = open(settings.outputFile, "w") if settings.outputFile else None
+        self.outputFile = None
         coloramaInit()
+
+    def setOutputFile(self, path:str):
+        self.outputFile = open(path, "w")
 
     def closeResources(self):
         if self.outputFile:
@@ -848,45 +857,76 @@ class WebEnumComponent(EnumComponent):
         return {"Type": sitemapType, "Location": url, "Entries": sitemapEntries}
 
 
-if __name__ == '__main__':
-    settings = Settings()
-    ow = OutputWriter(settings)
+class Environment():
+    def __init__(self):
+        self.os = platform.system()
+        self.isWindows = self.os == "Windows"
+        self.isLinux = self.os == "Linux"
 
-    enumComponents = {
-        "who":{"class": WhoisComponent, "printAsTable": False, "tableParams": None},
-        "dns":{"class": DnsComponent, "printAsTable": False, "tableParams": None},
-        "trace":{"class": TraceComponent, "printAsTable": True, "tableParams": (["Hop","Address","Domain","Time (ms)"],[6,20,40,12])},
-        "ssl": {"class": SSLComponent, "printAsTable": False, "tableParams": None},
-        "http": {"class": HTTPComponent, "printAsTable": False, "tableParams": None},
-        "web": {"class": WebEnumComponent, "printAsTable": False, "tableParams": None},
-    }
+        self.user = None
+        self.isUserAdmin = False
 
-    operations = settings.operations if settings.operations else enumComponents.keys()
+        if self.isLinux:
+            self.user = os.geteuid()
+            self.isUserAdmin = self.user == 0
 
-    for op in operations:
-        try:
-            if op in enumComponents.keys():
-                component = enumComponents[op]["class"](settings)
-                printAsTable = enumComponents[op]["printAsTable"]
-                compBanner = ow.getBanner(component)
-                output = ""
-                if printAsTable:
-                    cols, padding = enumComponents[op]["tableParams"]
-                    output = ow.printTable(component.getResult(), cols, padding)
+        elif self.isWindows:
+            self.user = os.getenv('username')
+            self.isUserAdmin = ctypes.windll.shell32.IsUserAnAdmin() == 1
+
+
+class Scan():
+    def __init__(self, ow:OutputWriter):
+        self.settings = Settings()
+        self.env = Environment()
+        self.ow = ow
+
+        if not self.env.isUserAdmin:
+            raise EnumException(message="This application requires administrative privileges")
+        
+        if self.settings.outputFile:
+            self.ow.setOutputFile(self.settings.outputFile)
+        
+        self.enumComponents = {
+            "who":{"class": WhoisComponent, "printAsTable": False, "tableParams": None},
+            "dns":{"class": DnsComponent, "printAsTable": False, "tableParams": None},
+            "trace":{"class": TraceComponent, "printAsTable": True, "tableParams": (["Hop","Address","Domain","Time (ms)"],[6,20,40,12])},
+            "ssl": {"class": SSLComponent, "printAsTable": False, "tableParams": None},
+            "http": {"class": HTTPComponent, "printAsTable": False, "tableParams": None},
+            "web": {"class": WebEnumComponent, "printAsTable": False, "tableParams": None},
+        }
+
+    def run(self):
+        operations = self.settings.operations if self.settings.operations else self.enumComponents.keys()
+
+        for op in operations:
+            try:
+                if op in self.enumComponents.keys():
+                    component = self.enumComponents[op]["class"](self.settings)
+                    printAsTable = self.enumComponents[op]["printAsTable"]
+                    compBanner = self.ow.getBanner(component)
+                    output = ""
+                    if printAsTable:
+                        cols, padding = self.enumComponents[op]["tableParams"]
+                        output = self.ow.printTable(component.getResult(), cols, padding)
+                    else:
+                        output = self.ow.getFormattedString(component.getResult())
+                    print(compBanner)
+                    print(output)
                 else:
-                    output = ow.getFormattedString(component.getResult())
-                print(compBanner)
-                print(output)
-            else:
-                print(ow.getErrorString(f"Unknown operation {op}. Skipped"))
-        except requests.exceptions.Timeout:
-            print(ow.getErrorString("Request timeout"))
-        except requests.exceptions.TooManyRedirects:
-            print(ow.getErrorString("Too many redirects"))
-        except (socket.error, requests.exceptions.ConnectionError):
-            print(ow.getErrorString("Destination is unreachable.\nVerify the supplied url and the eventual addresses of services to query and retry"))
-        except OSError:
-            print(ow.getErrorString("Too many redirects"))
-        finally:
-            ow.closeResources()
+                    print(self.ow.getErrorString(f"Unknown operation {op}. Skipped"))
+            except EnumException as e:
+                print(self.ow.getErrorString(e.fullErrStr))
+
+
+if __name__ == '__main__':
+    ow = OutputWriter()
+    
+    try:
+        scanInstance = Scan(ow)
+        scanInstance.run()
+    except EnumException as e:
+        print(ow.getErrorString(e.fullErrStr()))
+    finally:
+        ow.closeResources()
         
