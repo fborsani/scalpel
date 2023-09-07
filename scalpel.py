@@ -53,7 +53,7 @@ class Settings():
         args = vars(parser.parse_args())
 
         self.operations = args["a"][0].split(",") if args["a"] else None
-        self.url, self.domain, self.domainSimple, self.port, self.method = self._parseUrl(args["url"])
+        self.url, self.domain, self.domainSimple, self.port, self.method = RequestsUtility.parseUrl(args["url"])
         self.outputFile = self._parseInput(args, "o", None)
 
         #------WHOIS PARAMS------
@@ -93,35 +93,6 @@ class Settings():
         else:
             return altValue
 
-
-    def _parseUrl(self, url:str) -> tuple:
-        url = url.strip().lower()
-
-        idxParams = url.find("?")
-        urlNoParams = url[:idxParams] if idxParams > 0 else url 
-        
-        idxMethod = urlNoParams.find("://")
-        urlNoMethod = urlNoParams[idxMethod+3:] if idxMethod > 0 else urlNoParams
-
-        idxPort = urlNoMethod.rfind(":")
-
-        domain = urlNoMethod[:idxPort] if idxPort > 0 else urlNoMethod
-        domainSimple = domain
-
-        if domain.startswith("www."):
-            domainSimple = domain[4:]
-
-        if idxMethod < 0:
-            urlNoParams = Settings.SECURE_SCHEME + "://" + urlNoParams
-
-        return (
-            urlNoParams,
-            domain,
-            domainSimple,
-            int(urlNoMethod[idxPort+1:]) if idxPort > -1 else self.DEFAULT_PORT,
-            urlNoParams[:idxMethod] if idxMethod > -1 else self.SECURE_SCHEME
-        )
-  
     def _fileReader(self, targetList:list, path:str, comment:str=None):
         with open(path, 'r') as f:
             for line in f:
@@ -131,25 +102,6 @@ class Settings():
     def _downloadFile(self, url:str, dest:str):
         r = requests.get(url, allow_redirects=True)
         open(dest, "wb").write(r.content)
-
-
-class EnumComponent(ABC):
-    def __init__(self, bannerName:str, settings:Settings, outputWriter):
-        self.settings = settings
-        self.outputWriter = outputWriter
-        self.bannerName = bannerName
-    
-    @abstractmethod
-    def getResult(self):
-        pass
-
-
-class EnumException(Exception):
-    def __init__(self, module:EnumComponent, message:str, originalException:Exception):
-        self.message = message
-        self.module = module
-        self.fullErrStr = f"{module.bannerName}: {message}"
-        super().__init__(originalException)
 
 
 class OutputWriter():
@@ -177,6 +129,10 @@ class OutputWriter():
         self.rowSize = 120
         self.outputFile = None
         coloramaInit()
+
+    def printAppBanner(self):
+        #coming soon
+        pass
 
     def setOutputFile(self, path:str):
         self.outputFile = open(path, "w")
@@ -209,7 +165,6 @@ class OutputWriter():
                 input = self.INDENT*indent + input
 
         self.writeToFile(input+"\n" if addNewline else input)
-
 
         fore, back, style = type.value[0]
         return "{}{}{}{}{}{}".format(fore, back, style, input, OutputWriter.msgType.END.value, "\n" if addNewline else "")
@@ -308,8 +263,13 @@ class OutputWriter():
 
         return self.applyStyle(header + sepRow + body + sepRow)
 
-    def getBanner(self, component:EnumComponent):
-        banner = "="*self.BANNER_PADDING + component.bannerName + "="*self.BANNER_PADDING
+    def getBanner(self, input):
+        if isinstance(input, EnumComponent):
+            value = input.bannerName
+        else:
+            value = str(input)
+        
+        banner = f"{'='*self.BANNER_PADDING} {value} {'='*self.BANNER_PADDING}"
         return self.applyStyle(banner,OutputWriter.msgType.BANNER)
     
     def _toStr(self, input) -> str:
@@ -322,17 +282,207 @@ class OutputWriter():
         return input
 
 
+#-------ABSTRACT CLASS AND CUSTOM EXCEPTION--------
+
+
+class EnumComponent(ABC):
+    def __init__(self, bannerName:str, settings:Settings, outputWriter):
+        self.settings = settings
+        self.outputWriter = outputWriter
+        self.bannerName = bannerName
+    
+    @abstractmethod
+    def getResult(self):
+        pass
+
+
+class EnumException(Exception):
+    def __init__(self, module:EnumComponent, message:str, originalException:Exception):
+        self.message = message
+        self.module = module
+        self.fullErrStr = f"{module.bannerName}: {message}"
+        super().__init__(originalException)
+
+
+#-----------------UTILITY CLASSES-----------------
+
+
+class RequestsUtility():
+    SECURE_SCHEME="https"
+    DEFAULT_PORT=443
+
+    DEFAULT_DNS = ["8.8.8.8","8.8.4.4"]
+
+    METHODS={
+        "get":requests.get,
+        "post": requests.post,
+        "options": requests.options,
+        "put": requests.put,
+        "delete": requests.delete,
+        "patch": requests.patch      
+    }
+
+    HTTP_CODES = {
+        200: "OK",
+        201: "OK - resource created",
+        204: "OK - empty response",
+        301: "Permanent redirect",
+        302: "Temporary redirerct",
+        400: "Malformed request",
+        401: "Authentication required",
+        403: "Access forbidden",
+        404: "Not found",
+        405: "Method not allowed",
+        429: "Too many requests",
+        500: "Server failure",
+        501: "Method not implemented",
+        502: "Gateway error - upstream server failure",
+        503: "Server unavailable",
+        504: "Gateway error - upstream server timeout",
+        505: "HTTP version not supported"
+    }
+    
+    def __init__(self, caller:EnumComponent, settings:Settings):
+        self.timeout = 10
+        self.followRedirects = True
+        self.userAgent = ""
+        self.caller = caller
+
+    def httpRequest(self, url:str, method:str="get"):
+        try:
+            return self.METHODS[method](url=url,timeout=self.timeout,allow_redirects=self.followRedirects)      
+        except requests.ConnectionError as e:
+            raise EnumException(self.caller, f"Unable to connect to {url}", e)
+        except requests.ConnectTimeout as e:
+            raise EnumException(self.caller, f"Request to {url} has timed out", e)
+
+    def sockRequest(self, url:str, port:int, body:str=None, udp:bool=False):
+        if udp:
+            sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        else:
+            sc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        try:      
+            sc.settimeout(self.timeout)
+            sc.connect((url, port))
+            if body:
+                sc.send(body.encode())
+            return sc
+        except socket.error as e:
+            raise EnumException(self.caller, f"Unable to connect to {url}:{port}", e)
+
+    def sockSendbytes(self, sock, body:bytes, url:str, port:int, timeout:int=None):
+        timeout = timeout if timeout else self.timeout
+        sock.settimeout(timeout)
+        try:
+            sock.sendto(body,(url, port))
+            return sock
+        except socket.error:
+            raise EnumException(self.caller, f"Unable to connect to {url}:{port}", e)
+
+    def sockReceiver(self, port:int):
+        try:
+            sc = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+            sc.bind(("",port))
+            sc.settimeout(self.timeout)
+            return sc
+        except socket.error as e:
+            raise EnumException(self.caller, f"Listener binding failed on port {port}. This port is possibly being used by another application", e)
+    
+    def sockReceive(self, sock, size: int= 512):
+        try:
+            sock.settimeout(self.timeout)
+            return sock.recvfrom(size)
+        except socket.error:
+            return None          
+
+    @staticmethod
+    def dnsReverseLookup(ip:str, server:list=None):
+        resolver = dns.resolver.Resolver()
+        addr=dns.reversename.from_address(ip).to_text()
+        result = RequestsUtility.dnsSingleQuery(addr, "PTR", server)
+        return result[0] if result else addr
+    
+    @staticmethod
+    def dnsSingleQuery(target:str,record:str, server:list=None):
+        try:
+            resolver = dns.resolver.Resolver()
+            if server:
+                resolver.nameservers = server
+            result = resolver.resolve(target,record)
+            return [i.to_text() for i in result]
+        except DNSException:
+            return None
+
+    @staticmethod
+    def formatResponseCode(response):
+        code = response.status_code
+        if code in RequestsUtility.HTTP_CODES.keys():
+            return f"{code} ({RequestsUtility.HTTP_CODES[code]})"
+        return code
+
+    @staticmethod
+    def parseUrl(url:str):
+        url = url.strip().lower()
+
+        idxParams = url.find("?")
+        urlNoParams = url[:idxParams] if idxParams > 0 else url 
+        
+        idxMethod = urlNoParams.find("://")
+        urlNoMethod = urlNoParams[idxMethod+3:] if idxMethod > 0 else urlNoParams
+
+        idxPort = urlNoMethod.rfind(":")
+
+        domain = urlNoMethod[:idxPort] if idxPort > 0 else urlNoMethod
+        domainSimple = domain
+
+        if domain.startswith("www."):
+            domainSimple = domain[4:]
+
+        if idxMethod < 0:
+            urlNoParams = Settings.SECURE_SCHEME + "://" + urlNoParams
+
+        return (
+            urlNoParams,
+            domain,
+            domainSimple,
+            int(urlNoMethod[idxPort+1:]) if idxPort > -1 else RequestsUtility.DEFAULT_PORT,
+            urlNoParams[:idxMethod] if idxMethod > -1 else RequestsUtility.SECURE_SCHEME
+        )
+
+
+class Environment():
+    def __init__(self):
+        self.os = platform.system()
+        self.isWindows = self.os == "Windows"
+        self.isLinux = self.os == "Linux"
+
+        self.user = None
+        self.isUserAdmin = False
+
+        if self.isLinux:
+            self.user = os.geteuid()
+            self.isUserAdmin = self.user == 0
+
+        elif self.isWindows:
+            self.user = os.getenv('username')
+            self.isUserAdmin = ctypes.windll.shell32.IsUserAnAdmin() == 1
+
+
+#-----------------MODULES-----------------
+
+
 class WhoisComponent(EnumComponent):
     def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
-        super().__init__("WHOIS RECORDS",settings, outputWriter)
         self.domain = settings.domainSimple
         self.servers = settings.whoisServer
+        self.req = RequestsUtility(self, settings)
+        super().__init__("WHOIS RECORDS",settings, outputWriter)
 
     def getResult(self):
         if self.servers:    
             if isinstance(self.servers, list):
                 server = self._pickServer()
-                print("a"+str(server))
                 if server:
                     return self._whois(server)
                 else:
@@ -342,7 +492,6 @@ class WhoisComponent(EnumComponent):
         
     def _pickServer(self):
         domain = self.domain[self.domain.find(".")+1:]
-        print(domain+"-"+str(self.servers))
         for server in self.servers:
             ext, whoisServer = server
             if ext == domain:
@@ -351,15 +500,12 @@ class WhoisComponent(EnumComponent):
 
     def _whoisIana(self):
         request = f"https://www.iana.org/whois?q={self.domain}"
-        response = requests.get(request).text
+        response = self.req.httpRequest(request).text
         return response[response.find("<pre>")+5:response.rfind("</pre>")]
     
     def _whois(self,server):
         query = f'{self.domain}\r\n'
-        connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        connection.connect((server, 43))
-        connection.send(query.encode())
-        
+        connection = self.req.sockRequest(server,43,query)
         response = ""
 
         while len(response) < 10000:
@@ -413,11 +559,13 @@ class TraceComponent(EnumComponent):
         self.timeout = settings.traceTimeout
         self.showGateway = settings.traceShowGateway
 
-    def getResult(self):
-        rec = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
-        snd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self.req = RequestsUtility()
 
-        destAddress = self.dns.dnsSingleQuery(self.domain,"A")
+    def getResult(self):
+        rec = self.req.sockReceiver(self.port)
+        snd = self.req.sockRequest(self.domain, self.port, udp=True)
+
+        destAddress = self.req.dnsSingleQuery(self.domain,"A")
         if destAddress is None or len(destAddress) == 0:
             raise requests.exceptions.ConnectionError
         destAddress = destAddress[0]
@@ -427,18 +575,15 @@ class TraceComponent(EnumComponent):
         counter = 0
         hops = []
 
-        rec.bind(("",self.port))
-        rec.settimeout(self.timeout)
-        
         for hop in range(1, self.ttl+1):
             if currAddress != destAddress:
                 snd.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, hop)
-                snd.sendto(b"", (destAddress, self.port))
+                self.req.sockSendbytes(snd, b"", self.domain, self.port)
                 try:
                     sendTime = time.perf_counter_ns()
-                    _, currAddress = rec.recvfrom(512)
+                    _, currAddress = self.req.sockReceive(rec)
                     currAddress = currAddress[0]
-                    hostname = self.dns.reverse(currAddress)
+                    hostname = self.req.dnsReverseLookup(currAddress)
                     recTime = time.perf_counter_ns()
                     elapsed = (recTime - sendTime) / 1e6
                 except socket.error:
@@ -640,29 +785,10 @@ class SSLComponent(EnumComponent):
     
 
 class HTTPComponent(EnumComponent):
-    httpCodeDictionary = {
-        200: "OK",
-        201: "OK - resource created",
-        204: "OK - empty response",
-        301: "Permanent redirect",
-        302: "Temporary redirerct",
-        400: "Malformed request",
-        401: "Authentication required",
-        403: "Access forbidden",
-        404: "Not found",
-        405: "Method not allowed",
-        429: "Too many requests",
-        500: "Server failure",
-        501: "Method not implemented",
-        502: "Gateway error - upstream server failure",
-        503: "Server unavailable",
-        504: "Gateway error - upstream server timeout",
-        505: "HTTP version not supported"
-    }
-
     def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
         self.url = settings.url
         self.session = requests.Session()
+        self.req = RequestsUtility(self, settings)
         super().__init__("HTTP REQUESTS", settings, outputWriter)
 
     def getResult(self) -> dict:
@@ -678,11 +804,11 @@ class HTTPComponent(EnumComponent):
             return code
 
     def getHTTPinfo(self):
-        response = self.session.get(self.url)
-        options = self.session.options(self.url)
+        response = self.req.httpRequest(self.url)
+        options = self.req.httpRequest(self.url,"options")
 
         return {
-            "Response code": self.formatHTTPCode(response.status_code),
+            "Response code": self.req.formatResponseCode(response),
             "HTTP version": self._formatHttpVersion(response.raw.version),
             "Methods": options.headers["Allow"] if "Allow" in options.headers.keys() else None,
             "Headers": {k: [r.strip() for r in v.split(";") if r ] for k,v in response.headers.items()},
@@ -706,7 +832,6 @@ class HTTPComponent(EnumComponent):
         return "Not Found"
     
     def _parseRequest(self, req, trim:int=80):
-        status = req.status_code
         text = None
         if req.text:
             text = req.text[:trim]+"..."
@@ -714,40 +839,24 @@ class HTTPComponent(EnumComponent):
             text = "EMPTY RESPONSE"
 
         return {
-            "Code": self.formatHTTPCode(status),
+            "Code": self.req.formatResponseCode(req),
             "Response": text
         }
     
     def testHTTPMethods(self):
-        getReq = self.session.get(self.url)
-        postReq = self.session.post(self.url)
-        headReq = self.session.head(self.url)
-        optReq = self.session.options(self.url)
-        putReq = self.session.put(self.url)
-        patchReq = self.session.patch(self.url)
-        deleteReq = self.session.delete(self.url)
+        results = {}
 
-        return{
-            "GET": self._parseRequest(getReq),
-            "POST": self._parseRequest(postReq),
-            "HEAD": self._parseRequest(headReq),
-            "OPTIONS": self._parseRequest(optReq),
-            "PUT": self._parseRequest(putReq),
-            "PATCH": self._parseRequest(patchReq),
-            "DELETE": self._parseRequest(deleteReq),
-        }
+        for method in self.req.METHODS.keys():
+            results[method.upper()] = self._parseRequest(self.req.httpRequest(self.url, method))
+                                                               
+        return results
 
 
 class WebEnumComponent(EnumComponent):
     def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
         super().__init__("WEBSITE ENUMERATION", settings, outputWriter)
         self.url = settings.url
-        self.session = requests.Session()
-
-    def getFavicon(self):
-        response = self.session.get(self.url)
-        soup = BeautifulSoup(response.text,"html.parser")
-        return soup.find("link", rel="shortcut icon")
+        self.req = RequestsUtility(self, settings)
 
     def getSitemap(self, extraUrls:list=None):
         urls = ["sitemap","wp-sitemap","sitemap_index","post-sitemap","page-sitemap","pages-sitemap","category-sitemap","tag-sitemap"]
@@ -767,7 +876,7 @@ class WebEnumComponent(EnumComponent):
         return None
     
     def parseRobotsFile(self):
-        response = self.session.get(self.url+"/robots.txt")
+        response = self.req.httpRequest(self.url+"/robots.txt")
         robots = None
         if(response.status_code == 200 and response.text):
             robots = [l for l in response.text.splitlines() if l.strip()]
@@ -807,7 +916,7 @@ class WebEnumComponent(EnumComponent):
             }
 
     def getResult(self):
-        response = self.session.get(self.url, allow_redirects=True)
+        response = self.req.httpRequest(self.url)
         soup = BeautifulSoup(response.text,"html.parser")
         favicon = soup.find("link", rel="shortcut icon")
         robots = self.parseRobotsFile()
@@ -832,7 +941,7 @@ class WebEnumComponent(EnumComponent):
         sitemapEntries = None
 
         if url.endswith(".xml"):
-            r  = self.session.get(url,headers=headers)
+            r  = self.req.httpRequest(url)
             if r.status_code == 200 and r.text:
                 sitemapType = "xml"
                 soup = BeautifulSoup(r.text,features="xml")
@@ -849,30 +958,12 @@ class WebEnumComponent(EnumComponent):
                         for loc in tag.find_all("loc"):
                             sitemapEntries.append(loc.text)      
         else:
-            r  = requests.get(url,headers=headers)
+            r  = self.req.httpRequest(url,headers=headers)
             if r.status_code == 200 and r.text:
                 sitemapType = "plaintext"
                 sitemapEntries = r.text.splitlines()
         
         return {"Type": sitemapType, "Location": url, "Entries": sitemapEntries}
-
-
-class Environment():
-    def __init__(self):
-        self.os = platform.system()
-        self.isWindows = self.os == "Windows"
-        self.isLinux = self.os == "Linux"
-
-        self.user = None
-        self.isUserAdmin = False
-
-        if self.isLinux:
-            self.user = os.geteuid()
-            self.isUserAdmin = self.user == 0
-
-        elif self.isWindows:
-            self.user = os.getenv('username')
-            self.isUserAdmin = ctypes.windll.shell32.IsUserAnAdmin() == 1
 
 
 class Scan():
@@ -897,8 +988,9 @@ class Scan():
         }
 
     def run(self):
-        operations = self.settings.operations if self.settings.operations else self.enumComponents.keys()
+        self.ow.printAppBanner()
 
+        operations = self.settings.operations if self.settings.operations else self.enumComponents.keys()
         for op in operations:
             try:
                 if op in self.enumComponents.keys():
