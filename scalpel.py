@@ -131,9 +131,40 @@ class OutputWriter():
         coloramaInit()
 
     def printAppBanner(self):
-        #coming soon
-        pass
-
+        banner = '''
+                                           .##..
+                                           ..###..
+                                            .####..
+                                             .####..
+                                              .####..
+                                               .#####.
+                                                .#####.
+                                                 .#####.
+                                                  .#####.
+   ad#######ba        ,ad####ba,              db   .#####.   ##              ########ba     ###########   ##
+  d#"       "#b      d#"'    '"#b            d##b   .#####.  ##              ##      "#b    ##            ##
+ Y#           b     d#'                     d#''#b   .#####. ##              ##        #P   ##            ##
+ Y#,               d#'                     d#'  '#b   ####-. ##              ##        #P   ##            ##
+  Y#,              d#                     d#      #b   ###=- ##              ##      "#b    ##            ##
+   'Y#aaaaaaa,     ##                    d#YaaaaaaY#b   ##=--.#              ##aaaaaa#P'    #######       ##
+    '"""""""#b,    ##                   d#'"""""""''#b   #==--.              ##""""""'      ##"""""       ##
+            '#b    Y#                  d#           '#b   .----.             ##             ##            ##
+              #b   Y#,                d#'            '#b   .-=---.           ##             ##            ##
+  y          ,#P    Y#,              d#'              '#b   .-=----.         ##             ##            ##
+  Y#"       ,#P      Y#a.    .a#P   d#'                '#b   .-=----.        ##             ##            ##
+   "Y#######P"        '"Y####Y"'   d#'                  '#b  #.-=----.#####  ##             ###########   #############
+                                                               .-=---.
+                                                                .-=---.
+                                                                 .----.
+                                                                  .---.
+                                                                   .--.
+                                                                    .-.
+                                                                     ..
+                                                                      .
+            '''
+        
+        print(f"{OutputWriter.msgType.DEFAULT.value[0][0]}{banner}{OutputWriter.msgType.END.value}")
+        
     def setOutputFile(self, path:str):
         self.outputFile = open(path, "w")
 
