@@ -19,6 +19,32 @@ from abc import ABC, abstractmethod
 from colorama import Fore, Back, Style, init as coloramaInit
 
 
+class Environment():
+    def __init__(self):
+        termSize = os.get_terminal_size()
+        self.termWidth = None
+        self.termHeight = None
+    
+        if termSize:
+            self.termWidth = termSize.columns
+            self.termHeight = termSize.lines
+    
+        self.os = platform.system()
+        self.isWindows = self.os == "Windows"
+        self.isLinux = self.os == "Linux"
+
+        self.user = None
+        self.isUserAdmin = False
+
+        if self.isLinux:
+            self.user = os.geteuid()
+            self.isUserAdmin = self.user == 0
+
+        elif self.isWindows:
+            self.user = os.getenv('username')
+            self.isUserAdmin = ctypes.windll.shell32.IsUserAnAdmin() == 1
+
+
 class Settings():
     SECURE_SCHEME="https"
     DEFAULT_PORT=443
@@ -124,6 +150,8 @@ class OutputWriter():
     TUPLE_ARG_NAME_PADDING = 32
     TUPLE_ARG_VALUE_PADDING = 6
     BANNER_PADDING = 10
+    
+    BANNER_MIN_TERM_SIZE=120
 
     def __init__(self):
         self.rowSize = 120
@@ -162,8 +190,11 @@ class OutputWriter():
                                                                      ..
                                                                       .
             '''
-        
-        print(f"{OutputWriter.msgType.DEFAULT.value[0][0]}{banner}{OutputWriter.msgType.END.value}")
+    
+        termWidth = Environment().termWidth
+    
+        if termWidth and termWidth >= OutputWriter.BANNER_MIN_TERM_SIZE:
+            print(f"{OutputWriter.msgType.DEFAULT.value[0][0]}{banner}{OutputWriter.msgType.END.value}")
         
     def setOutputFile(self, path:str):
         self.outputFile = open(path, "w")
@@ -480,24 +511,6 @@ class RequestsUtility():
             int(urlNoMethod[idxPort+1:]) if idxPort > -1 else RequestsUtility.DEFAULT_PORT,
             urlNoParams[:idxMethod] if idxMethod > -1 else RequestsUtility.SECURE_SCHEME
         )
-
-
-class Environment():
-    def __init__(self):
-        self.os = platform.system()
-        self.isWindows = self.os == "Windows"
-        self.isLinux = self.os == "Linux"
-
-        self.user = None
-        self.isUserAdmin = False
-
-        if self.isLinux:
-            self.user = os.geteuid()
-            self.isUserAdmin = self.user == 0
-
-        elif self.isWindows:
-            self.user = os.getenv('username')
-            self.isUserAdmin = ctypes.windll.shell32.IsUserAnAdmin() == 1
 
 
 #-----------------MODULES-----------------
