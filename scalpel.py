@@ -18,7 +18,6 @@ from enum import Enum
 from abc import ABC, abstractmethod
 from colorama import Fore, Back, Style, init as coloramaInit
 
-
 class Environment():
     def __init__(self):
         termSize = os.get_terminal_size()
@@ -56,10 +55,9 @@ class Settings():
     DEFAULT_TRACE_TTL = 30
     DEFAULT_TRACE_TIMEOUT = 5
 
-    SEPARATOR = ","
+    DEFAULT_DORKS_TLD = "com"
 
-    WHOIS_FILE_COMMENT = ";"
-    WHOIS_FILE_URL = "https://www.nirsoft.net/whois-servers.txt"
+    SEPARATOR = ","
 
     def __init__(self):
         parser = argparse.ArgumentParser(description='Enumerate information about a website')
@@ -76,6 +74,8 @@ class Settings():
         parser.add_argument("--trace-timeout", type=int, action="append", help="Timeout in seconds")
         parser.add_argument("--trace-show-gateway", action="store_true", help="Display local gateway in traceoute")
         parser.add_argument("--ssl-use-os-library", action="store_true", help="Use the openssl library included in your Linux distribution instead of the one packaged in python")
+        parser.add_argument("--dorks-file", action="append", help="File containing google dorks to use")
+        parser.add_argument("--dorks-tld", action="append", help="Specify the google TLD to query i.e. com, co.in, jp...")
         args = vars(parser.parse_args())
 
         self.operations = args["a"][0].split(",") if args["a"] else None
@@ -84,19 +84,15 @@ class Settings():
 
         #------WHOIS PARAMS------
         self.whoisServer = None
-        self.whoisFromFile = False
+        self.whoisFromFile = None
+        self.whoisGetRemoteFile = None
 
         if args["whois_server"]:
             self.whoisServer = args["whois_server"][0]
         elif args["whois_server_file"]:
-            self.whoisServer = []
-            self._fileReader(self.whoisServer, args["whois_server_file"][0], self.WHOIS_FILE_COMMENT)
-            self.whoisFromFile = True
+            self.whoisFromFile = args["whois_server_file"][0]
         elif args["whois_get_servers"]:
-            self.whoisServer = []
-            dest = args["whois_get_servers"][0]
-            self._downloadFile(self.WHOIS_FILE_URL, dest)
-            self._fileReader(self.whoisServer, dest, self.WHOIS_FILE_COMMENT)
+            self.whoisGetRemoteFile = args["whois_get_servers"][0]
 
         #-----DNS PARAMS------
         self.dnsServer = self._parseInput(args, "dns_server", self.DEFAULT_DNS_SERVER)
@@ -111,24 +107,18 @@ class Settings():
         #-----SSL PARAMS------
         self.useOsLibrary = args["ssl_use_os_library"]
 
-    def _parseInput(self, args, key:str, altValue:str, sep:str=None):
+        #-----DORKS PARAMS------
+        self.dorksFile = self._parseInput(args, "dorks_file")
+        self.dorksTld = self._parseInput(args, "dorks_tld", self.DEFAULT_DORKS_TLD)
+
+    def _parseInput(self, args, key:str, altValue:str=None, sep:str=None):
         if args[key]:
             if sep:
                 return args[key][0].split(sep)
             return args[key][0]
         else:
             return altValue
-
-    def _fileReader(self, targetList:list, path:str, comment:str=None):
-        with open(path, 'r') as f:
-            for line in f:
-                if not comment or (comment and not line.startswith(comment)):
-                    targetList.append(tuple(line.split()))
-
-    def _downloadFile(self, url:str, dest:str):
-        r = requests.get(url, allow_redirects=True)
-        open(dest, "wb").write(r.content)
-
+        
 
 class OutputWriter():
     class msgType(Enum):
@@ -291,9 +281,11 @@ class OutputWriter():
                 lastIdx = len(input)-1
                 for idx,r in enumerate(input):
                     if isinstance(r, tuple):
-                        strOut += self.applyStyleTuple(r,indent)
+                        strOut += self.applyStyleTuple(r, indent)
                     else:
-                        strOut += self.inputParser(r,indent)
+                        strOut += self.inputParser(r, indent)
+                        if isinstance(r, dict):
+                            strOut += "\n\n\n"
             else:
                 strOut = self.inputParser(None,indent)
         else:
@@ -368,7 +360,6 @@ class EnumException(Exception):
 
 #-----------------UTILITY CLASSES-----------------
 
-
 class RequestsUtility():
     SECURE_SCHEME="https"
     DEFAULT_PORT=443
@@ -404,19 +395,65 @@ class RequestsUtility():
         505: "HTTP version not supported"
     }
     
-    def __init__(self, caller:EnumComponent, settings:Settings):
-        self.timeout = 10
-        self.followRedirects = True
-        self.userAgent = ""
+    def __init__(self, caller:EnumComponent,
+                 settings:Settings=None,
+                 session:bool=False,
+                 timeout:int=10,
+                 followRedirects:bool=True,
+                 userAgent:str="",
+                 headers:dict=None,
+                 cookies:dict=None):
+        
+        if settings:
+            self.timeout = 10
+            self.followRedirects = True
+            self.userAgent = ""
+            self.cookies = ""
+            self.headers = ""
+        else:
+            self.timeout = timeout
+            self.followRedirects = followRedirects
+            self.userAgent = userAgent
+            self.cookies = cookies
+            self.headers = headers
+
+        self.session = requests.session() if session else None
+
         self.caller = caller
 
-    def httpRequest(self, url:str, method:str="get"):
+    def httpRequest(self, url:str, method:str="get", params:dict=None):
         try:
-            return self.METHODS[method](url=url,timeout=self.timeout,allow_redirects=self.followRedirects)      
+            if self.session:
+                if method == "get":
+                    return self.session.get(url,
+                                        timeout=self.timeout,
+                                        allow_redirects=self.followRedirects,
+                                        cookies=self.cookies,
+                                        headers=self.headers,
+                                        params=params) 
+                if method == "post":
+                    return self.session.post(url,
+                                        timeout=self.timeout,
+                                        allow_redirects=self.followRedirects,
+                                        cookies=self.cookies,
+                                        headers=self.headers,
+                                        params=params) 
+
+            return self.METHODS[method](url,
+                                        timeout=self.timeout,
+                                        allow_redirects=self.followRedirects,
+                                        cookies=self.cookies,
+                                        headers=self.headers,
+                                        params=params) 
         except requests.ConnectionError as e:
             raise EnumException(self.caller, f"Unable to connect to {url}", e)
         except requests.ConnectTimeout as e:
             raise EnumException(self.caller, f"Request to {url} has timed out", e)
+
+    def getSessionCookies(self):
+        if self.session:
+            return self.session.cookies
+        return None
 
     def sockRequest(self, url:str, port:int, body:str=None, udp:bool=False):
         if udp:
@@ -439,7 +476,7 @@ class RequestsUtility():
         try:
             sock.sendto(body,(url, port))
             return sock
-        except socket.error:
+        except socket.error as e:
             raise EnumException(self.caller, f"Unable to connect to {url}:{port}", e)
 
     def sockReceiver(self, port:int):
@@ -513,30 +550,58 @@ class RequestsUtility():
         )
 
 
+class FileUtility():
+    def __init__(self, split:bool=False, separator:str=None, commentSymbol:str=None):
+        self.commentSymbol = commentSymbol
+        self.split = split
+        self.sep = separator if split and separator else None
+
+    def readFile(self, path:str):
+        rows = []
+        with open(path, 'r') as f:
+            for line in f:
+                if not self.commentSymbol or (self.commentSymbol and not line.startswith(self.commentSymbol)):
+                    values = line if self.split else line
+                    rows.append([l.strip() for l in line.split(self.sep)])
+        return rows
+
+    def createFromRequest(self, req:RequestsUtility, url:str, dest:str):
+        response = req.httpRequest(url)
+        open(dest, "wb").write(response.content)
+        
+
 #-----------------MODULES-----------------
 
-
 class WhoisComponent(EnumComponent):
+    FILE_COMMENT = ";"
+    FILE_URL = "https://www.nirsoft.net/whois-servers.txt"
+    
     def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
         self.domain = settings.domainSimple
-        self.servers = settings.whoisServer
+        self.server = settings.whoisServer
+        self.filePath = settings.whoisFromFile
+        self.remoteFileDest = settings.whoisGetRemoteFile
+
         self.req = RequestsUtility(self, settings)
+        self.fileUtil = FileUtility(True, commentSymbol= WhoisComponent.FILE_COMMENT)
         super().__init__("WHOIS RECORDS",settings, outputWriter)
 
-    def getResult(self):
-        if self.servers:    
-            if isinstance(self.servers, list):
-                server = self._pickServer()
-                if server:
-                    return self._whois(server)
-                else:
-                    return None
-            return self._whois(self.servers)
+    def getResult(self): 
+        if self.server:
+            return self._whois(self.server)
+        if self.filePath:
+            servers = self.fileUtil.readFile(self.filePath)
+            print(servers)
+            return self._whois(self._pickServer(servers))
+        if self.remoteFileDest:
+            self.fileUtil.createFromRequest(self.req, WhoisComponent.FILE_URL, self.remoteFileDest)
+            servers = self.fileUtil.readFile(self.remoteFileDest)
+            return self._whois(self._pickServer(servers))
         return self._whoisIana()
         
-    def _pickServer(self):
+    def _pickServer(self, servers:list):
         domain = self.domain[self.domain.find(".")+1:]
-        for server in self.servers:
+        for server in servers:
             ext, whoisServer = server
             if ext == domain:
                 return whoisServer
@@ -598,16 +663,17 @@ class TraceComponent(EnumComponent):
         super().__init__("TRACEROUTE", settings, outputWriter)
         self.dns = DnsComponent(settings, ow)
         self.domain = settings.domain
+        self.destPort = settings.port
         self.port = settings.tracePort
         self.ttl = settings.traceTtl
         self.timeout = settings.traceTimeout
         self.showGateway = settings.traceShowGateway
 
-        self.req = RequestsUtility()
+        self.req = RequestsUtility(self)
 
     def getResult(self):
         rec = self.req.sockReceiver(self.port)
-        snd = self.req.sockRequest(self.domain, self.port, udp=True)
+        snd = self.req.sockRequest(self.domain, self.destPort, udp=True)
 
         destAddress = self.req.dnsSingleQuery(self.domain,"A")
         if destAddress is None or len(destAddress) == 0:
@@ -622,7 +688,7 @@ class TraceComponent(EnumComponent):
         for hop in range(1, self.ttl+1):
             if currAddress != destAddress:
                 snd.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, hop)
-                self.req.sockSendbytes(snd, b"", self.domain, self.port)
+                self.req.sockSendbytes(snd, b"", destAddress, self.port)
                 try:
                     sendTime = time.perf_counter_ns()
                     _, currAddress = self.req.sockReceive(rec)
@@ -831,8 +897,7 @@ class SSLComponent(EnumComponent):
 class HTTPComponent(EnumComponent):
     def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
         self.url = settings.url
-        self.session = requests.Session()
-        self.req = RequestsUtility(self, settings)
+        self.req = RequestsUtility(self, settings, True)
         super().__init__("HTTP REQUESTS", settings, outputWriter)
 
     def getResult(self) -> dict:
@@ -865,7 +930,7 @@ class HTTPComponent(EnumComponent):
                             "Secure": k.secure,
                             "HttpOnly": k.has_nonstandard_attr("HttpOnly"),
                             "SameSite": k.get_nonstandard_attr("SameSite") if k.has_nonstandard_attr("SameSite") else False
-                        } for k in self.session.cookies}
+                        } for k in self.req.getSessionCookies()}
         }
 
     def _formatHttpVersion(self, version:int) -> str: 
@@ -1010,6 +1075,69 @@ class WebEnumComponent(EnumComponent):
         return {"Type": sitemapType, "Location": url, "Entries": sitemapEntries}
 
 
+class DorksComponent(EnumComponent):
+    DORK_SITE_RESTRICTION = "site:"
+    HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:70.0) Gecko/20100101 Firefox/70.0"}
+    REQUESTS_WAIT_TIME = 3
+
+    EXCLUDED_DOMAINS = (
+        "/",
+        "#",
+        "https://howwemakemoney.withgoogle.com",
+        "https://policies.google.com",
+        "https://support.google.com",
+        "https://www.google.com/webhp",
+        "https://maps.google.com/maps"
+    )
+
+    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+        self.dorksFile = settings.dorksFile
+        self.domain = settings.domain
+        self.startPage = 0
+        self.googleTLD = settings.dorksTld
+        self.baseUrl = f"https://www.google.{self.googleTLD}/search"
+
+        self.req = RequestsUtility(self, headers=DorksComponent.HEADERS)
+    
+        super().__init__("GOOGLE DORKS", settings, outputWriter)
+
+    def getResult(self):
+        dorks = FileUtility(split=True, separator=";;").readFile(self.dorksFile)
+        results = []
+
+        for dork in dorks:
+            if len(dork) == 2:
+                dorkStr, comment = dork
+            else:
+                dorkStr = dork[0]
+                comment = None
+
+            payload = f"{DorksComponent.DORK_SITE_RESTRICTION}{self.domain} {dorkStr}"
+            params = {'q': payload, 'start': self.startPage * 10} 
+
+            response = self.req.httpRequest(self.baseUrl, params=params)
+            soup = BeautifulSoup(response.text,"html.parser")
+            
+            links = []
+            for link in soup.find_all("a",{"href":True}):
+                href = link["href"]
+                if not href.startswith(DorksComponent.EXCLUDED_DOMAINS):
+                    links.append(href)
+
+            results.append(
+                {
+                    "Payload": dorkStr,
+                    "Comment": comment,
+                    "Url": response.url,
+                    "Results": links
+                }
+            )
+
+            time.sleep(DorksComponent.REQUESTS_WAIT_TIME)
+
+        return results
+
+
 class Scan():
     def __init__(self, ow:OutputWriter):
         self.settings = Settings()
@@ -1023,12 +1151,13 @@ class Scan():
             self.ow.setOutputFile(self.settings.outputFile)
         
         self.enumComponents = {
-            "who":{"class": WhoisComponent, "printAsTable": False, "tableParams": None},
-            "dns":{"class": DnsComponent, "printAsTable": False, "tableParams": None},
-            "trace":{"class": TraceComponent, "printAsTable": True, "tableParams": (["Hop","Address","Domain","Time (ms)"],[6,20,40,12])},
+            "whois": {"class": WhoisComponent, "printAsTable": False, "tableParams": None},
+            "dns": {"class": DnsComponent, "printAsTable": False, "tableParams": None},
+            "trace": {"class": TraceComponent, "printAsTable": True, "tableParams": (["Hop","Address","Domain","Time (ms)"],[6,20,40,12])},
             "ssl": {"class": SSLComponent, "printAsTable": False, "tableParams": None},
             "http": {"class": HTTPComponent, "printAsTable": False, "tableParams": None},
             "web": {"class": WebEnumComponent, "printAsTable": False, "tableParams": None},
+            "dorks": {"class": DorksComponent, "printAsTable": False, "tableParams": None},
         }
 
     def run(self):
@@ -1053,7 +1182,6 @@ class Scan():
                     print(self.ow.getErrorString(f"Unknown operation {op}. Skipped"))
             except EnumException as e:
                 print(self.ow.getErrorString(e.fullErrStr))
-
 
 if __name__ == '__main__':
     ow = OutputWriter()

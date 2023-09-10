@@ -1,0 +1,11 @@
+ext:pdf ;; PDF Files
+inurl:wsdl ;; WSDL info page 
+filetype:wsdl ;; WSDL Files
+"index of" "database.sql.zip" ;; SQL backups
+intitle:"index of" inurl:ftp  ;; FTP server
+intitle:"Index of" wp-admin   ;; Indexed WordPress admin page
+intitle:"Apache2 Ubuntu Default Page: It works" ;; Default Apache page
+"Index of" inurl:phpmyadmin  ;; phpMyAdmin page
+inurl:Dashboard.jspa intext:"Atlassian Jira Project Management Software" ;; Jira web instance
+inurl:app/kibana intext:Loading Kibana ;; Kibana web instance
+inurl:_cpanel/forgotpwd ;; cPanel forgotten password
