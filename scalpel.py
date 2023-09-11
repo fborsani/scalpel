@@ -8,10 +8,10 @@ from bs4 import BeautifulSoup, Comment
 from urllib3 import PoolManager
 import requests
 from requests.adapters import HTTPAdapter
-import time
+import time, random, string
+import os, ctypes, platform
 import argparse
 import subprocess
-import os, ctypes, platform
 from subprocess import TimeoutExpired
 from datetime import datetime
 from enum import Enum
@@ -76,9 +76,12 @@ class Settings():
         parser.add_argument("--ssl-use-os-library", action="store_true", help="Use the openssl library included in your Linux distribution instead of the one packaged in python")
         parser.add_argument("--dorks-file", action="append", help="File containing google dorks to use")
         parser.add_argument("--dorks-tld", action="append", help="Specify the google TLD to query i.e. com, co.in, jp...")
+        parser.add_argument("--brute-file", action="append", help="Dictionary file for url bruteforcing")
+        parser.add_argument("--brute-include-codes", action="append", help="HTTP codes to include in results")
+        parser.add_argument("--brute-print-404", action="store_true", help="Print requests that match the server's 404 page")
         args = vars(parser.parse_args())
 
-        self.operations = args["a"][0].split(",") if args["a"] else None
+        self.operations = self._parseInput(args, "a", sep = self.SEPARATOR)
         self.url, self.domain, self.domainSimple, self.port, self.method = RequestsUtility.parseUrl(args["url"])
         self.outputFile = self._parseInput(args, "o", None)
 
@@ -110,6 +113,11 @@ class Settings():
         #-----DORKS PARAMS------
         self.dorksFile = self._parseInput(args, "dorks_file")
         self.dorksTld = self._parseInput(args, "dorks_tld", self.DEFAULT_DORKS_TLD)
+
+        #-----BRUTEFORCE PARAMS------
+        self.bruteFile = self._parseInput(args, "brute_file")
+        self.bruteIncludedHttpCodes = self._parseInput(args, "brute_include_codes")
+        self.brutePrint404 = args["brute_print_404"]
 
     def _parseInput(self, args, key:str, altValue:str=None, sep:str=None):
         if args[key]:
@@ -562,7 +570,10 @@ class FileUtility():
             for line in f:
                 if not self.commentSymbol or (self.commentSymbol and not line.startswith(self.commentSymbol)):
                     values = line if self.split else line
-                    rows.append([l.strip() for l in line.split(self.sep)])
+                    if self.split:
+                        rows.append([l.strip() for l in line.split(self.sep)])
+                    else:
+                        rows.append(line.strip())
         return rows
 
     def createFromRequest(self, req:RequestsUtility, url:str, dest:str):
@@ -1091,6 +1102,11 @@ class DorksComponent(EnumComponent):
     )
 
     def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+        super().__init__("GOOGLE DORKS", settings, outputWriter)
+
+        if not settings.dorksFile:
+            raise EnumException(self, "A dictionary file must be specified with the flag --dorks-file", None)
+
         self.dorksFile = settings.dorksFile
         self.domain = settings.domain
         self.startPage = 0
@@ -1098,8 +1114,6 @@ class DorksComponent(EnumComponent):
         self.baseUrl = f"https://www.google.{self.googleTLD}/search"
 
         self.req = RequestsUtility(self, headers=DorksComponent.HEADERS)
-    
-        super().__init__("GOOGLE DORKS", settings, outputWriter)
 
     def getResult(self):
         dorks = FileUtility(split=True, separator=";;").readFile(self.dorksFile)
@@ -1137,6 +1151,75 @@ class DorksComponent(EnumComponent):
 
         return results
 
+class BruteforceModule(EnumComponent):
+    RANDOM_URL_LENGTH = 20
+
+    def __init__(self, settings: Settings, outputWriter=None):
+        super().__init__("URL BRUTEFORCER", settings, outputWriter)
+
+        if not settings.bruteFile:
+            raise EnumException(self, "A dictionary file must be specified with the flag --brute-file", None)
+        
+        self.file = settings.bruteFile
+        self.includedHttpCodes = settings.bruteIncludedHttpCodes
+        self.printfourOhfourPages = settings.brutePrint404
+        self.extensions = None
+        self.domain = settings.url
+        self.req = RequestsUtility(self, settings, followRedirects=True)
+
+    def getResult(self):
+        fourOhFour = self.getFourOhFourPage()
+        excludeUrl = fourOhFour["Redirects"][-1] if fourOhFour else None
+        excludeSize = fourOhFour["Response Size"] if fourOhFour else None
+
+        urls = FileUtility().readFile(self.file)
+        results = []
+
+        for url in urls:
+            if url.startswith("/"):
+                url = url[1:]
+
+            try:
+                response = self.req.httpRequest(f"{self.domain}/{url}")
+                responseCode = str(response.status_code)
+                responseHistory = response.history
+                   
+                if self.includedHttpCodes is None or (self.includedHttpCodes and responseCode in self.includedHttpCodes):
+                        lastUrl = responseHistory[-1].url if responseHistory else response.url
+                        responseSize = len(response.text)
+                        if (excludeUrl and lastUrl == excludeUrl) or (excludeSize and responseSize == excludeSize):
+                            if self.printfourOhfourPages:
+                                results.append((url, "404 Page"))
+                        else:
+                            results.append(self._printResult(response, url))
+            except EnumException:
+                results.append(self._printResult(response, url))
+
+        return {
+            "404 Generic Page": fourOhFour,
+            "Results": results
+        }
+    
+    def _printResult(self, response, url):
+        history = response.history
+
+        if history:
+            firstCode = history[0].status_code
+            lastCode = history[-1].status_code
+            lastUrl = history[-1].url
+            return(url, f"{firstCode} --> {lastCode} [{lastUrl}]")
+        else:
+            return(url, str(response.status_code))
+
+    def getFourOhFourPage(self):
+        randomUrl = "".join(random.choice(string.ascii_letters) for i in range(0, self.RANDOM_URL_LENGTH))
+        url = self.domain + "/" + randomUrl
+        response = self.req.httpRequest(url)
+        return{
+            "Redirects": [u.url for u in response.history] if response.history else response.url,
+            "Response Size": len(response.text) if response.text else 0
+        }
+
 
 class Scan():
     def __init__(self, ow:OutputWriter):
@@ -1158,6 +1241,7 @@ class Scan():
             "http": {"class": HTTPComponent, "printAsTable": False, "tableParams": None},
             "web": {"class": WebEnumComponent, "printAsTable": False, "tableParams": None},
             "dorks": {"class": DorksComponent, "printAsTable": False, "tableParams": None},
+            "brute": {"class": BruteforceModule, "printAsTable": False, "tableParams": None}
         }
 
     def run(self):

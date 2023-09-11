@@ -1,4 +1,9 @@
 ext:pdf ;; PDF Files
+ext:txt ;; TXT Files
+ext:sql ;; SQL Files
+ext:zip ;; ZIP Files
+ext:tar ;; TAR Files
+ext:bak ;; Backup files
 inurl:wsdl ;; WSDL info page 
 filetype:wsdl ;; WSDL Files
 "index of" "database.sql.zip" ;; SQL backups
