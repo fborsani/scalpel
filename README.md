@@ -8,6 +8,7 @@ The program is built as a collection of modules that can be executed togheter or
 * **http**: enumerates the following elements: http version, supported methods, response headers and cookies set
 * **web**: retrieves webpage information: metatada in head, robots.txt entries, sitemaps, page title, favicon, included scripts, included stylesheets, page links and html comments
 * **dorks**: run Google dorks queries against the target url. The module returns the generated Google query urls and a list of links as result. The payloads are retrieved from a file specified with the parameter --dorks-file
+* **brute**: detect exposed pages and resources by executing queries for urls listed in a dictionary file. The payloads are retrieved from a file specified with the parameter --brute-file
 ## Usage
 The script creates privileged sockets during its execution and requires root privileges to run.
 By default the script can be invoked without parameters, this will trigger the execution of all modules
