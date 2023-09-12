@@ -151,7 +151,7 @@ class Settings():
 class OutputWriter():
     class msgType(Enum):
         DEFAULT = (Fore.GREEN,"",""),
-        BANNER = (Fore.GREEN, Back.LIGHTGREEN_EX, Style.BRIGHT),
+        BANNER = (Fore.WHITE, Back.GREEN, Style.BRIGHT),
         ARGNAME = (Fore.GREEN, "", Style.BRIGHT),
         INFO = (Fore.BLUE,"",""),
         SUCCESS = (Fore.GREEN, "", ""),
@@ -379,10 +379,10 @@ class EnumComponent(ABC):
 
 
 class EnumException(Exception):
-    def __init__(self, module:EnumComponent, message:str, originalException:Exception):
+    def __init__(self, module:EnumComponent, message:str, originalException:Exception=None):
         self.message = message
         self.module = module
-        self.fullErrStr = f"{module.bannerName}: {message}"
+        self.fullErrStr = f"{module.bannerName}: {message}" if module else self.message
         super().__init__(originalException)
 
 
@@ -1259,7 +1259,7 @@ class Scan():
         self.ow = ow
 
         if not self.env.isUserAdmin:
-            raise EnumException(message="This application requires administrative privileges")
+            raise EnumException(None, "This application requires administrative privileges")
         
         if self.settings.outputFile:
             self.ow.setOutputFile(self.settings.outputFile)
@@ -1310,7 +1310,7 @@ if __name__ == '__main__':
         scanInstance = Scan(ow)
         scanInstance.run()
     except EnumException as e:
-        print(ow.getErrorString(e.fullErrStr()))
+        print(ow.getErrorString(e.fullErrStr))
     finally:
         ow.closeResources()
         
