@@ -9,7 +9,7 @@ from urllib3 import PoolManager
 import requests
 from requests.adapters import HTTPAdapter
 import time, random, string
-import os, ctypes, platform
+import os, ctypes, platform, concurrent
 import argparse
 import subprocess
 from subprocess import TimeoutExpired
@@ -45,9 +45,6 @@ class Environment():
 
 
 class Settings():
-    SECURE_SCHEME="https"
-    DEFAULT_PORT=443
-
     DEFAULT_DNS_SERVER = "8.8.8.8"
     DEFAULT_DNS_RECORDS = ["A","AAAA","CNAME","PTR","MX","SOA","TXT"]
 
@@ -58,12 +55,17 @@ class Settings():
     DEFAULT_DORKS_TLD = "com"
 
     SEPARATOR = ","
+    DEFAULT_THREADS = 4
+    DEFAULT_TIMEOUT = 5
 
     def __init__(self):
         parser = argparse.ArgumentParser(description='Enumerate information about a website')
         parser.add_argument("url")
         parser.add_argument("-a",default=None, type=str, action="append", help="Specify the modules to run")
         parser.add_argument("-o",type=str, action="append", help="Path to output file")
+        parser.add_argument("-H", type=str, action="append", nargs="+", help="Specify one or more HTTP headers in the format <name>:<value>")
+        parser.add_argument("-C", type=str, action="append", nargs="+", help="Specify one or more cookies in the format <name>=<value>")
+        parser.add_argument("-t",type=int, action="append", help="Request timeout")
         parser.add_argument("--whois-server", type=str, action="append", help="WHOIS server to use")
         parser.add_argument("--whois-server-file", type=str, action="append", help="WHOIS file to import. File must contain the domain and the server separated by space")
         parser.add_argument("--whois-get-servers", type=str, action="append", help="Downloads and save a list of whois servers to the specified file")
@@ -79,11 +81,18 @@ class Settings():
         parser.add_argument("--brute-file", action="append", help="Dictionary file for url bruteforcing")
         parser.add_argument("--brute-include-codes", action="append", help="HTTP codes to include in results")
         parser.add_argument("--brute-print-404", action="store_true", help="Print requests that match the server's 404 page")
+        parser.add_argument("--threads",type=int, action="append", help="Max number of threads in bruteforce tasks")
         args = vars(parser.parse_args())
 
         self.operations = self._parseInput(args, "a", sep = self.SEPARATOR)
-        self.url, self.domain, self.domainSimple, self.port, self.method = RequestsUtility.parseUrl(args["url"])
         self.outputFile = self._parseInput(args, "o", None)
+        self.threads = self._parseInput(args, "threads", altValue=self.DEFAULT_THREADS)
+
+        #------REQUESTS PARAMS------
+        self.url, self.domain, self.domainSimple, self.port, self.method = RequestsUtility.parseUrl(args["url"])
+        self.headers = self._parseMultiValueParam(args["H"],":")
+        self.cookies = self._parseMultiValueParam(args["C"],"=")
+        self.timeout = self._parseInput(args, "t", self.DEFAULT_TIMEOUT)
 
         #------WHOIS PARAMS------
         self.whoisServer = None
@@ -126,6 +135,17 @@ class Settings():
             return args[key][0]
         else:
             return altValue
+        
+    def _parseMultiValueParam(self, input:list, sep:str, altValue:str=None):
+        dict = {}
+        if input:
+            for subList in input:
+                for entry in subList:
+                    if sep in entry:
+                        items = entry.split(sep,1)
+                        dict[items[0].strip()] = items[1].strip()
+            return dict
+        return altValue
         
 
 class OutputWriter():
@@ -408,20 +428,18 @@ class RequestsUtility():
                  session:bool=False,
                  timeout:int=10,
                  followRedirects:bool=True,
-                 userAgent:str="",
                  headers:dict=None,
                  cookies:dict=None):
         
         if settings:
-            self.timeout = 10
+            self.timeout = settings.timeout
+            self.threads = settings.threads
             self.followRedirects = True
-            self.userAgent = ""
-            self.cookies = ""
-            self.headers = ""
+            self.cookies = settings.cookies
+            self.headers = settings.headers
         else:
             self.timeout = timeout
             self.followRedirects = followRedirects
-            self.userAgent = userAgent
             self.cookies = cookies
             self.headers = headers
 
@@ -523,7 +541,11 @@ class RequestsUtility():
 
     @staticmethod
     def formatResponseCode(response):
-        code = response.status_code
+        if isinstance(response, requests.Response):
+            code = response.status_code
+        else:
+            code = int(response)
+
         if code in RequestsUtility.HTTP_CODES.keys():
             return f"{code} ({RequestsUtility.HTTP_CODES[code]})"
         return code
@@ -547,7 +569,7 @@ class RequestsUtility():
             domainSimple = domain[4:]
 
         if idxMethod < 0:
-            urlNoParams = Settings.SECURE_SCHEME + "://" + urlNoParams
+            urlNoParams = RequestsUtility.SECURE_SCHEME + "://" + urlNoParams
 
         return (
             urlNoParams,
@@ -1151,6 +1173,7 @@ class DorksComponent(EnumComponent):
 
         return results
 
+
 class BruteforceModule(EnumComponent):
     RANDOM_URL_LENGTH = 20
 
@@ -1165,6 +1188,7 @@ class BruteforceModule(EnumComponent):
         self.printfourOhfourPages = settings.brutePrint404
         self.extensions = None
         self.domain = settings.url
+        self.threads = settings.threads
         self.req = RequestsUtility(self, settings, followRedirects=True)
 
     def getResult(self):
@@ -1175,30 +1199,37 @@ class BruteforceModule(EnumComponent):
         urls = FileUtility().readFile(self.file)
         results = []
 
-        for url in urls:
-            if url.startswith("/"):
-                url = url[1:]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as threadPool:
+            threads = {threadPool.submit(self._worker, url, excludeUrl, excludeSize): url for url in urls}
 
-            try:
-                response = self.req.httpRequest(f"{self.domain}/{url}")
-                responseCode = str(response.status_code)
-                responseHistory = response.history
-                   
-                if self.includedHttpCodes is None or (self.includedHttpCodes and responseCode in self.includedHttpCodes):
-                        lastUrl = responseHistory[-1].url if responseHistory else response.url
-                        responseSize = len(response.text)
-                        if (excludeUrl and lastUrl == excludeUrl) or (excludeSize and responseSize == excludeSize):
-                            if self.printfourOhfourPages:
-                                results.append((url, "404 Page"))
-                        else:
-                            results.append(self._printResult(response, url))
-            except EnumException:
-                results.append(self._printResult(response, url))
+            for thread in concurrent.futures.as_completed(threads):
+                res = thread.result()
+                if res:
+                    results.append(thread.result())        
+                else:
+                    results.append((threads[thread], "No response"))
 
         return {
             "404 Generic Page": fourOhFour,
             "Results": results
         }
+    
+    def _worker(self, url, excludeUrl, excludeSize):
+        if url.startswith("/"):
+                url = url[1:]
+
+        response = self.req.httpRequest(f"{self.domain}/{url}")
+        responseCode = str(response.status_code)
+        responseHistory = response.history
+            
+        if self.includedHttpCodes is None or (self.includedHttpCodes and responseCode in self.includedHttpCodes):
+                lastUrl = responseHistory[-1].url if responseHistory else response.url
+                responseSize = len(response.text)
+                if (excludeUrl and lastUrl == excludeUrl) or (excludeSize and responseSize == excludeSize):
+                    if self.printfourOhfourPages:
+                        return (url, "404 Page")
+                else:
+                    return self._printResult(response, url)
     
     def _printResult(self, response, url):
         history = response.history
@@ -1207,9 +1238,9 @@ class BruteforceModule(EnumComponent):
             firstCode = history[0].status_code
             lastCode = history[-1].status_code
             lastUrl = history[-1].url
-            return(url, f"{firstCode} --> {lastCode} [{lastUrl}]")
+            return(url, f"{RequestsUtility.formatResponseCode(firstCode)} --> {RequestsUtility.formatResponseCode(lastCode)} [{lastUrl}]")
         else:
-            return(url, str(response.status_code))
+            return(url, RequestsUtility.formatResponseCode(response.status_code))
 
     def getFourOhFourPage(self):
         randomUrl = "".join(random.choice(string.ascii_letters) for i in range(0, self.RANDOM_URL_LENGTH))
@@ -1253,19 +1284,24 @@ class Scan():
                 if op in self.enumComponents.keys():
                     component = self.enumComponents[op]["class"](self.settings)
                     printAsTable = self.enumComponents[op]["printAsTable"]
+                    
                     compBanner = self.ow.getBanner(component)
                     output = ""
+
+                    print(compBanner)
+
                     if printAsTable:
                         cols, padding = self.enumComponents[op]["tableParams"]
                         output = self.ow.printTable(component.getResult(), cols, padding)
                     else:
                         output = self.ow.getFormattedString(component.getResult())
-                    print(compBanner)
+
                     print(output)
                 else:
                     print(self.ow.getErrorString(f"Unknown operation {op}. Skipped"))
             except EnumException as e:
                 print(self.ow.getErrorString(e.fullErrStr))
+
 
 if __name__ == '__main__':
     ow = OutputWriter()
