@@ -1,6 +1,7 @@
-beautifulsoup4==4.11.0
-colorama==0.4.6
-dnspython==2.4.0
-pyOpenSSL==21.0.0
-Requests==2.31.0
-urllib3==1.26.12
+beautifulsoup4>=4.11.0
+colorama>=0.4.6
+dnspython>=2.4.0
+pyOpenSSL>=21.0.0
+Requests>=2.31.0
+urllib3>=1.26.12
+lxml>=4.9.2

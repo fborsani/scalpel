@@ -151,7 +151,7 @@ class Settings():
 class OutputWriter():
     class msgType(Enum):
         DEFAULT = (Fore.GREEN,"",""),
-        BANNER = (Fore.WHITE, Back.GREEN, Style.BRIGHT),
+        BANNER = (Fore.YELLOW, Back.GREEN, Style.BRIGHT),
         ARGNAME = (Fore.GREEN, "", Style.BRIGHT),
         INFO = (Fore.BLUE,"",""),
         SUCCESS = (Fore.GREEN, "", ""),
@@ -229,6 +229,7 @@ class OutputWriter():
         return self.applyStyle(input, OutputWriter.msgType.ERROR)
 
     def applyStyle(self, input:str, type=msgType.DEFAULT, indent:int=0):
+
         if isinstance (input, bytes):
             try:
                 input = input.decode()
@@ -247,7 +248,7 @@ class OutputWriter():
         self.writeToFile(input+"\n" if addNewline else input)
 
         fore, back, style = type.value[0]
-        return "{}{}{}{}{}{}".format(fore, back, style, input, OutputWriter.msgType.END.value, "\n" if addNewline else "")
+        return fore + back + style + input + OutputWriter.msgType.END.value + ("\n" if addNewline else "")
     
     def applyStyleTuple(self, input:tuple, indent:int):
         argName, argValue = input
@@ -324,27 +325,6 @@ class OutputWriter():
         else:
             return strOut
     
-    def printTable(self, rows:list, cols:list, padding:list):
-        sep = "|"
-        sepPadding = 1
-        tableLen = sum(padding) + len(sep) * (len(cols)+1)
-        sepRow = "\n" + "-" * tableLen
-
-        header = ""
-        body = ""
-
-        for c in range(0,len(cols)):
-            header += sep  + f"{' '+cols[c]:<{padding[c]}s}"
-        header += sep
-
-        for r in rows:
-            row = sep
-            for i in range(0,len(cols)):
-                row += f"{' '+r[i]:<{padding[i]}s}"+sep
-            body += "\n" + row
-
-        return self.applyStyle(header + sepRow + body + sepRow)
-
     def getBanner(self, input):
         if isinstance(input, EnumComponent):
             value = input.bannerName
@@ -393,6 +373,8 @@ class RequestsUtility():
     DEFAULT_PORT=443
 
     DEFAULT_DNS = ["8.8.8.8","8.8.4.4"]
+
+    RESERVED_PORT = 1024
 
     METHODS={
         "get":requests.get,
@@ -482,6 +464,9 @@ class RequestsUtility():
         return None
 
     def sockRequest(self, url:str, port:int, body:str=None, udp:bool=False):
+        if not Environment().isUserAdmin:
+            raise EnumException(self.caller, f"Administrative privileges are required to open sockets", None)
+
         if udp:
             sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         else:
@@ -497,6 +482,9 @@ class RequestsUtility():
             raise EnumException(self.caller, f"Unable to connect to {url}:{port}", e)
 
     def sockSendbytes(self, sock, body:bytes, url:str, port:int, timeout:int=None):
+        if not Environment().isUserAdmin:
+            raise EnumException(self.caller, f"Administrative privileges are required to open sockets", None)
+        
         timeout = timeout if timeout else self.timeout
         sock.settimeout(timeout)
         try:
@@ -506,6 +494,9 @@ class RequestsUtility():
             raise EnumException(self.caller, f"Unable to connect to {url}:{port}", e)
 
     def sockReceiver(self, port:int):
+        if not Environment().isUserAdmin:
+            raise EnumException(self.caller, f"Administrative privileges are required to open sockets", None)
+        
         try:
             sc = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
             sc.bind(("",port))
@@ -642,8 +633,17 @@ class WhoisComponent(EnumComponent):
 
     def _whoisIana(self):
         request = f"https://www.iana.org/whois?q={self.domain}"
-        response = self.req.httpRequest(request).text
-        return response[response.find("<pre>")+5:response.rfind("</pre>")]
+        response = self.req.httpRequest(request)
+
+        if response.status_code == 200 and response.text:
+            text = response.text
+            result = text[text.find("<pre>")+5:text.rfind("</pre>")]
+            if result.strip():
+                return result
+            else:
+                return "Empty response from IANA whois page. Consider sending a request directly to a WHOIS server using --whois-server or --whois-server-file"
+        else:
+            return f"Connection failed. Response code: {self.req.formatResponseCode(response)}"
     
     def _whois(self,server):
         query = f'{self.domain}\r\n'
@@ -705,42 +705,92 @@ class TraceComponent(EnumComponent):
         self.req = RequestsUtility(self)
 
     def getResult(self):
+        destAddress = self.req.dnsSingleQuery(self.domain,"A")
+        if not destAddress or not destAddress[0]:
+            raise EnumException(self, "Unable to resolve destination")
+        
+        destAddress = destAddress[0]
+        traceResult = self.trace(destAddress) 
+        
+        return {
+            "Destination address": destAddress,
+            "Success": traceResult["success"],
+            "Note": traceResult["note"],
+            "Traceroute": self.printTable(traceResult["hops"], ["Hop","Address","Domain","Time (ms)"], [6,20,40,12])
+        }
+
+    def trace(self, destAddress):
         rec = self.req.sockReceiver(self.port)
         snd = self.req.sockRequest(self.domain, self.destPort, udp=True)
-
-        destAddress = self.req.dnsSingleQuery(self.domain,"A")
-        if destAddress is None or len(destAddress) == 0:
-            raise requests.exceptions.ConnectionError
-        destAddress = destAddress[0]
 
         currAddress = ""
         gatewayAddr = None
         counter = 0
         hops = []
+        success = False
+        note = None
 
         for hop in range(1, self.ttl+1):
             if currAddress != destAddress:
                 snd.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, hop)
                 self.req.sockSendbytes(snd, b"", destAddress, self.port)
-                try:
-                    sendTime = time.perf_counter_ns()
-                    _, currAddress = self.req.sockReceive(rec)
+                sendTime = time.perf_counter_ns()
+                response = self.req.sockReceive(rec)
+                if response:
+                    _, currAddress = response
                     currAddress = currAddress[0]
                     hostname = self.req.dnsReverseLookup(currAddress)
                     recTime = time.perf_counter_ns()
                     elapsed = (recTime - sendTime) / 1e6
-                except socket.error:
+                else:
                     currAddress = None
                     elapsed = None
+                    hostname = None
                 if self.showGateway or not (self.showGateway or gatewayAddr == hostname):
                     counter += 1
-                    hops.append((str(counter),currAddress,hostname,f"{elapsed:.2f}"))
+                    hops.append((str(counter),currAddress,hostname,f"{elapsed:.2f}" if elapsed else None))
                     if not gatewayAddr:
                         gatewayAddr = hostname
             else:
-                break           
-        return hops
+                success = True
+                break        
 
+        if not success:
+            #the variable hostname records the last host visited. If populated it means the target was not reachable within the specified ttl.
+            #If the variable is None it means the last request was not completed possibily due to a timeout or host unreachable error
+
+            if hostname:
+                note = f"Unable to reach target within {self.ttl} hops"
+            else:
+                note = f"Destination unreachable due to request timeout"
+
+        return {
+            "success": success,
+            "note": note,
+            "hops": hops
+        }
+
+    def printTable(self, rows:list, cols:list, padding:list):
+        sep = "|"
+        nonePlaceholder = "*"
+        tableLen = sum(padding) + len(sep) * (len(cols)+1)
+        sepRow = "\n" + "-" * tableLen
+
+        header = ""
+        body = ""
+
+        for c in range(0,len(cols)):
+            header += sep  + f"{' '+cols[c]:<{padding[c]}s}"
+        header += sep
+
+        for r in rows:         
+            row = sep
+            for i in range(0,len(cols)):
+                val = r[i] if r[i] else nonePlaceholder
+                row += f"{' '+val:<{padding[i]}s}"+sep
+            body += "\n" + row
+
+        return header + sepRow + body + sepRow
 
 class SSLComponent(EnumComponent):
 
@@ -828,8 +878,12 @@ class SSLComponent(EnumComponent):
         if platform.system() == "Windows":
             cmdRoot = "openssl.exe"
 
-        version = subprocess.run([cmdRoot, "version"], capture_output = True).stdout.decode("UTF-8")
-        ciphers = subprocess.run([cmdRoot, "ciphers", "ALL"], capture_output = True).stdout.decode("UTF-8").strip().split(":")
+        try:
+            version = subprocess.run([cmdRoot, "version"], capture_output = True).stdout.decode("UTF-8")
+            ciphers = subprocess.run([cmdRoot, "ciphers", "ALL"], capture_output = True).stdout.decode("UTF-8").strip().split(":")
+        except FileNotFoundError as e:
+            raise EnumException(self, f"Unable to execute {cmdRoot}. Verify that the application is installed and that the folder in included in $PATH or BIN env variables", e)
+        
         formats = [
                     ("SSLv2", "-ssl2"),
                     ("SSLv3", "-ssl3"),
@@ -1068,11 +1122,11 @@ class WebEnumComponent(EnumComponent):
             "Favicon": favicon["href"] if favicon else None,
             "HTML params": soup.find("html").attrs,
             "Meta Tags": soup.find_all("meta"),
-            "Included scripts": [script["src"] for script in soup.find_all("script",{"src":True})],
-            "Included stylesheets": [link["href"] for link in soup.find_all("link", rel="stylesheet")],
+            "Included scripts": [script["src"].strip() for script in soup.find_all("script",{"src":True}) if script["src"].strip()],
+            "Included stylesheets": [link["href"].strip() for link in soup.find_all("link", rel="stylesheet") if link["href"].strip()],
             "Robots entries": robots,
             "Sitemap entries": self.getSitemap(robots["Sitemap"]),
-            "Page links": list(set([link["href"] for link in soup.find_all("a",{"href":True})])),
+            "Page links": list(set([link["href"].strip() for link in soup.find_all("a",{"href":True}) if link["href"].strip()])),
             "Comments": [line.strip() for line in soup.find_all(string = lambda text: isinstance(text,Comment)) if line.strip()]
             
         }
@@ -1086,7 +1140,7 @@ class WebEnumComponent(EnumComponent):
             r  = self.req.httpRequest(url)
             if r.status_code == 200 and r.text:
                 sitemapType = "xml"
-                soup = BeautifulSoup(r.text,features="xml")
+                soup = BeautifulSoup(r.text, "lxml")
                 sitemapTags = soup.find_all("sitemap")
                 sitemapEntries = []
                 
@@ -1257,22 +1311,19 @@ class Scan():
         self.settings = Settings()
         self.env = Environment()
         self.ow = ow
-
-        if not self.env.isUserAdmin:
-            raise EnumException(None, "This application requires administrative privileges")
         
         if self.settings.outputFile:
             self.ow.setOutputFile(self.settings.outputFile)
         
         self.enumComponents = {
-            "whois": {"class": WhoisComponent, "printAsTable": False, "tableParams": None},
-            "dns": {"class": DnsComponent, "printAsTable": False, "tableParams": None},
-            "trace": {"class": TraceComponent, "printAsTable": True, "tableParams": (["Hop","Address","Domain","Time (ms)"],[6,20,40,12])},
-            "ssl": {"class": SSLComponent, "printAsTable": False, "tableParams": None},
-            "http": {"class": HTTPComponent, "printAsTable": False, "tableParams": None},
-            "web": {"class": WebEnumComponent, "printAsTable": False, "tableParams": None},
-            "dorks": {"class": DorksComponent, "printAsTable": False, "tableParams": None},
-            "brute": {"class": BruteforceModule, "printAsTable": False, "tableParams": None}
+            "whois": WhoisComponent,
+            "dns": DnsComponent,
+            "trace": TraceComponent,
+            "ssl": SSLComponent,
+            "http": HTTPComponent,
+            "web": WebEnumComponent,
+            "dorks": DorksComponent,
+            "brute": BruteforceModule
         }
 
     def run(self):
@@ -1282,21 +1333,9 @@ class Scan():
         for op in operations:
             try:
                 if op in self.enumComponents.keys():
-                    component = self.enumComponents[op]["class"](self.settings)
-                    printAsTable = self.enumComponents[op]["printAsTable"]
-                    
-                    compBanner = self.ow.getBanner(component)
-                    output = ""
-
-                    print(compBanner)
-
-                    if printAsTable:
-                        cols, padding = self.enumComponents[op]["tableParams"]
-                        output = self.ow.printTable(component.getResult(), cols, padding)
-                    else:
-                        output = self.ow.getFormattedString(component.getResult())
-
-                    print(output)
+                    component = self.enumComponents[op](self.settings)
+                    print(self.ow.getBanner(component))
+                    print(self.ow.getFormattedString(component.getResult()))
                 else:
                     print(self.ow.getErrorString(f"Unknown operation {op}. Skipped"))
             except EnumException as e:
