@@ -58,7 +58,7 @@ class Settings():
     DEFAULT_THREADS = 4
     DEFAULT_TIMEOUT = 5
 
-    def __init__(self):
+    def __init__(self, args:list=None):
         parser = argparse.ArgumentParser(description='Enumerate information about a website')
         parser.add_argument("url")
         parser.add_argument("-a",default=None, type=str, action="append", help="Specify the modules to run")
@@ -82,7 +82,7 @@ class Settings():
         parser.add_argument("--brute-include-codes", action="append", help="HTTP codes to include in results")
         parser.add_argument("--brute-print-404", action="store_true", help="Print requests that match the server's 404 page")
         parser.add_argument("--threads",type=int, action="append", help="Max number of threads in bruteforce tasks")
-        args = vars(parser.parse_args())
+        args = vars(parser.parse_args(args))
 
         self.operations = self._parseInput(args, "a", sep = self.SEPARATOR)
         self.outputFile = self._parseInput(args, "o", None)
@@ -694,7 +694,7 @@ class DnsComponent(EnumComponent):
 class TraceComponent(EnumComponent):
     def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
         super().__init__("TRACEROUTE", settings, outputWriter)
-        self.dns = DnsComponent(settings, ow)
+        self.dns = DnsComponent(settings, outputWriter)
         self.domain = settings.domain
         self.destPort = settings.port
         self.port = settings.tracePort
@@ -1307,10 +1307,10 @@ class BruteforceModule(EnumComponent):
 
 
 class Scan():
-    def __init__(self, ow:OutputWriter):
-        self.settings = Settings()
+    def __init__(self, args:list=None):
+        self.settings = Settings(args)
         self.env = Environment()
-        self.ow = ow
+        self.ow = OutputWriter()
         
         if self.settings.outputFile:
             self.ow.setOutputFile(self.settings.outputFile)
@@ -1341,15 +1341,9 @@ class Scan():
             except EnumException as e:
                 print(self.ow.getErrorString(e.fullErrStr))
 
+        self.ow.closeResources()
 
 if __name__ == '__main__':
-    ow = OutputWriter()
-    
-    try:
-        scanInstance = Scan(ow)
-        scanInstance.run()
-    except EnumException as e:
-        print(ow.getErrorString(e.fullErrStr))
-    finally:
-        ow.closeResources()
+    Scan().run()
+
         
