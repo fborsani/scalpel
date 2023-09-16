@@ -13,28 +13,36 @@ def checkTerm():
     Run from .exe file by double clicking: explorer.exe --> scalpel.exe --> scalpel.exe
     '''
 
-    curr = os.getpid()
-    parent = os.getppid()
-    origin = psutil.Process(psutil.Process(parent).ppid())
-    
-    return psutil.Process(parent).name() != psutil.Process(curr).name() and origin != 'explorer.exe'
+    curr = psutil.Process(os.getpid())
+    parent = psutil.Process(os.getppid())
+    origin = psutil.Process(parent.ppid())
+        
+    return curr.name() == parent.name() and  origin.name() != 'explorer.exe'
 
 def preloadExe(args:list):
     fromTerm = checkTerm()
     appName = "scalpel.exe"
 
-    if not args and not fromTerm:
+    if not fromTerm:
         args = input("Specify the arguments to pass to the script and press ENTER\n").split()
     
-    scalpel.Scan(appName, args).run()
-
-    if not fromTerm:
-        #Keep terminal open after execution ends
-        input("Press ENTER to close...")
+    try:
+        scalpel.Scan(appName, args).run()
+    except KeyboardInterrupt:
+        print("Interrupt detected")
+    except Exception:
+        pass
+    finally:
+        if not fromTerm:
+            #Keep terminal open after execution ends
+            input("Press ENTER to close...")
 
 def preloadElf(args:list):
     appName = "scalpel"
-    scalpel.Scan(appName, args).run()
+    try:
+        scalpel.Scan(appName, args).run()
+    except KeyboardInterrupt:
+        print("Interrupt detected")
  
 if __name__ == '__main__':
     args = sys.argv[1:]

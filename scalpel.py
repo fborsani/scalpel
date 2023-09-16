@@ -1307,8 +1307,8 @@ class BruteforceModule(EnumComponent):
 
 
 class Scan():
-    def __init__(self, args:list=None):
-        self.settings = Settings(args)
+    def __init__(self, appName:str=None, args:list=None):
+        self.settings = Settings(appName, args)
         self.env = Environment()
         self.ow = OutputWriter()
         
