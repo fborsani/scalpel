@@ -34,3 +34,15 @@ Install the requirements
 ```
 pip -r requirements.txt
 ```
+## Manual Build
+Install extra dependencies
+```
+pip install pyinstaller, psutil
+```
+Clone the project, navigate to the build folder and run pyinstaller
+```
+git clone https://github.com/fborsani/scalpel
+cd <path>/scalpel/build
+pyinstaller scalpel.spec
+```
+The compiled executable file will be stoerd under <path>/scalpel/build/dist
