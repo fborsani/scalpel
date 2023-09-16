@@ -58,8 +58,8 @@ class Settings():
     DEFAULT_THREADS = 4
     DEFAULT_TIMEOUT = 5
 
-    def __init__(self, args:list=None):
-        parser = argparse.ArgumentParser(description='Enumerate information about a website')
+    def __init__(self, appName:str=None, args:list=None):
+        parser = argparse.ArgumentParser(prog=appName, description="Perform enumeration against a website using various techniques")
         parser.add_argument("url")
         parser.add_argument("-a",default=None, type=str, action="append", help="Specify the modules to run")
         parser.add_argument("-o",type=str, action="append", help="Path to output file")

@@ -1,10 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-import sys
+import platform
 
 block_cipher = None
 a = Analysis(
-    ['exeWrapper.py', '../scalpel.py'],
+    ['wrapper.py', '../scalpel.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -25,7 +25,7 @@ exe = EXE(
     a.scripts,
 	a.binaries + [('msvcp100.dll', 'C:\\Windows\\System32\\msvcp100.dll', 'BINARY'),
 				('msvcr100.dll', 'C:\\Windows\\System32\\msvcr100.dll', 'BINARY')]
-	if sys.platform == 'win32' else a.binaries,
+	if platform.system() == "Windows" else a.binaries,
     a.zipfiles,
     a.datas,
     [],
