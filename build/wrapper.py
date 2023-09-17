@@ -30,11 +30,11 @@ def preloadExe(args:list):
         scalpel.Scan(appName, args).run()
     except KeyboardInterrupt:
         print("Interrupt detected")
-    except Exception:
-        pass
+    except Exception as e:
+        print("Unexpected error:\n{e}")
     finally:
         if not fromTerm:
-            #Keep terminal open after execution ends
+            #Prevent terminal from closing
             input("Press ENTER to close...")
 
 def preloadElf(args:list):

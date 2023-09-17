@@ -55,38 +55,42 @@ class Settings():
     DEFAULT_DORKS_TLD = "com"
 
     SEPARATOR = ","
+    DEFAULT_OPERATIONS=["whois", "dns", "ssl", "http", "web"]
     DEFAULT_THREADS = 4
     DEFAULT_TIMEOUT = 5
 
     def __init__(self, appName:str=None, args:list=None):
         parser = argparse.ArgumentParser(prog=appName, description="Perform enumeration against a website using various techniques")
         parser.add_argument("url")
-        parser.add_argument("-a",default=None, type=str, action="append", help="Specify the modules to run")
-        parser.add_argument("-o",type=str, action="append", help="Path to output file")
-        parser.add_argument("-H", type=str, action="append", nargs="+", help="Specify one or more HTTP headers in the format <name>:<value>")
-        parser.add_argument("-C", type=str, action="append", nargs="+", help="Specify one or more cookies in the format <name>=<value>")
-        parser.add_argument("-t",type=int, action="append", help="Request timeout")
-        parser.add_argument("--whois-server", type=str, action="append", help="WHOIS server to use")
-        parser.add_argument("--whois-server-file", type=str, action="append", help="WHOIS file to import. File must contain the domain and the server separated by space")
-        parser.add_argument("--whois-get-servers", type=str, action="append", help="Downloads and save a list of whois servers to the specified file")
-        parser.add_argument("--dns-server", type=str, action="append", help="DNS server to use")
-        parser.add_argument("--dns-records", type=str, action="append", help="DNS records to query. Accepts multiple values separated by a comma")
-        parser.add_argument("--trace-port", type=int, action="append", help="port to use for tracing")
-        parser.add_argument("--trace-ttl", type=int, action="append", help="max number of hops")
-        parser.add_argument("--trace-timeout", type=int, action="append", help="Timeout in seconds")
-        parser.add_argument("--trace-show-gateway", action="store_true", help="Display local gateway in traceoute")
-        parser.add_argument("--ssl-use-os-library", action="store_true", help="Use the openssl library included in your Linux distribution instead of the one packaged in python")
-        parser.add_argument("--dorks-file", action="append", help="File containing google dorks to use")
-        parser.add_argument("--dorks-tld", action="append", help="Specify the google TLD to query i.e. com, co.in, jp...")
-        parser.add_argument("--brute-file", action="append", help="Dictionary file for url bruteforcing")
-        parser.add_argument("--brute-include-codes", action="append", help="HTTP codes to include in results")
-        parser.add_argument("--brute-print-404", action="store_true", help="Print requests that match the server's 404 page")
-        parser.add_argument("--threads",type=int, action="append", help="Max number of threads in bruteforce tasks")
+        parser.add_argument("-a", type=str, help="Specify the modules to run")
+        parser.add_argument("-o", type=str, help="Path to output file")
+        parser.add_argument("-q", action="store_true", help="Skip printing banner")
+        parser.add_argument("-H", type=str, action="append", nargs="+", help="specify one or more HTTP headers in the format <name>:<value>")
+        parser.add_argument("-C", type=str, action="append", nargs="+", help="specify one or more cookies in the format <name>=<value>")
+        parser.add_argument("-t", type=int, help="Request timeout")
+        parser.add_argument("--whois-server", type=str, help="WHOIS server to use")
+        parser.add_argument("--whois-server-file", type=str, help="WHOIS file to import. File must contain the domain and the server separated by space")
+        parser.add_argument("--whois-get-servers", type=str, help="Downloads and save a list of whois servers to the specified file")
+        parser.add_argument("--dns-server", type=str, help="DNS server to use")
+        parser.add_argument("--dns-records", type=str, help="DNS records to query. Accepts multiple values separated by a comma")
+        parser.add_argument("--trace-port", type=int, help="port to use for tracing")
+        parser.add_argument("--trace-ttl", type=int, help="max number of hops")
+        parser.add_argument("--trace-timeout", type=int, help="Timeout in seconds")
+        parser.add_argument("--trace-show-gateway", action="store_true", help="display local gateway in traceoute")
+        parser.add_argument("--ssl-use-os-library", action="store_true", help="use the system openssl library instead of the one packaged in python")
+        parser.add_argument("--dorks-file", help="File containing google dorks to use")
+        parser.add_argument("--dorks-tld", help="specify the google TLD to query i.e. com, co.in, jp...")
+        parser.add_argument("--brute-file", help="dictionary file for url bruteforcing")
+        parser.add_argument("--brute-include-codes", help="HTTP codes to include in results")
+        parser.add_argument("--brute-print-404", action="store_true", help="Print requests that match the website default 404 page")
+        parser.add_argument("--threads",type=int, help="Max number of threads in bruteforce tasks")
         args = vars(parser.parse_args(args))
 
-        self.operations = self._parseInput(args, "a", sep = self.SEPARATOR)
-        self.outputFile = self._parseInput(args, "o", None)
-        self.threads = self._parseInput(args, "threads", altValue=self.DEFAULT_THREADS)
+        #------GENERAL PARAMS------
+        self.operations = self._parseInput(args, "a", self.DEFAULT_OPERATIONS, self.SEPARATOR)
+        self.outputFile = self._parseInput(args, "o")
+        self.threads = self._parseInput(args, "threads", self.DEFAULT_THREADS)
+        self.quiet = args["q"]
 
         #------REQUESTS PARAMS------
         self.url, self.domain, self.domainSimple, self.port, self.method = RequestsUtility.parseUrl(args["url"])
@@ -131,8 +135,8 @@ class Settings():
     def _parseInput(self, args, key:str, altValue:str=None, sep:str=None):
         if args[key]:
             if sep:
-                return args[key][0].split(sep)
-            return args[key][0]
+                return args[key].split(sep)
+            return args[key]
         else:
             return altValue
         
@@ -1327,7 +1331,8 @@ class Scan():
         }
 
     def run(self):
-        self.ow.printAppBanner()
+        if not self.settings.quiet:
+            self.ow.printAppBanner()
 
         operations = self.settings.operations if self.settings.operations else self.enumComponents.keys()
         for op in operations:
