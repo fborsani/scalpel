@@ -26,6 +26,7 @@ Generic
 ```
 -o <file>              specify an output file
 -q                     do not print the banner
+-v                     print additional information
 -H <header>:<value>    set a request header to be included in all requests. Can be specified multiple times
 -C <cookie>=<value>    set a request cookie to be included in all requests. Can be specified mutiple times
 -t <seconds>           request timeout in seconds
