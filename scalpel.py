@@ -1,3 +1,4 @@
+import struct
 import dns
 from dns import resolver
 from dns.exception import DNSException
@@ -8,7 +9,7 @@ from bs4 import BeautifulSoup, Comment
 from urllib3 import PoolManager
 import requests
 from requests.adapters import HTTPAdapter
-import time, random, string
+import time, random, string, re
 import os, ctypes, platform, concurrent
 import argparse
 import subprocess
@@ -45,7 +46,7 @@ class Environment():
 
 
 class Settings():
-    DEFAULT_DNS_SERVER = "8.8.8.8"
+    DEFAULT_DNS_SERVER = ["8.8.8.8"]
     DEFAULT_DNS_RECORDS = ["A","AAAA","CNAME","PTR","MX","SOA","TXT"]
 
     DEFAULT_TRACE_PORT = 33434
@@ -65,12 +66,14 @@ class Settings():
         parser.add_argument("-a", type=str, help="Specify the modules to run")
         parser.add_argument("-o", type=str, help="Path to output file")
         parser.add_argument("-q", action="store_true", help="Skip printing banner")
+        parser.add_argument("--whois-server", type=str, help="WHOIS server to use")
         parser.add_argument("-H", type=str, action="append", nargs="+", help="specify one or more HTTP headers in the format <name>:<value>")
         parser.add_argument("-C", type=str, action="append", nargs="+", help="specify one or more cookies in the format <name>=<value>")
         parser.add_argument("-t", type=int, help="Request timeout")
-        parser.add_argument("--whois-server", type=str, help="WHOIS server to use")
+        parser.add_argument("--threads",type=int, help="Max number of threads in bruteforce tasks")
+        parser.add_argument("-v", action="store_true", help="Print additional information")
         parser.add_argument("--whois-server-file", type=str, help="WHOIS file to import. File must contain the domain and the server separated by space")
-        parser.add_argument("--whois-get-servers", type=str, help="Downloads and save a list of whois servers to the specified file")
+        parser.add_argument("--whois-get-servers", type=str, help="Download and save a list of whois servers to the specified file")
         parser.add_argument("--dns-server", type=str, help="DNS server to use")
         parser.add_argument("--dns-records", type=str, help="DNS records to query. Accepts multiple values separated by a comma")
         parser.add_argument("--trace-port", type=int, help="port to use for tracing")
@@ -78,12 +81,11 @@ class Settings():
         parser.add_argument("--trace-timeout", type=int, help="Timeout in seconds")
         parser.add_argument("--trace-show-gateway", action="store_true", help="display local gateway in traceoute")
         parser.add_argument("--ssl-use-os-library", action="store_true", help="use the system openssl library instead of the one packaged in python")
-        parser.add_argument("--dorks-file", help="File containing google dorks to use")
-        parser.add_argument("--dorks-tld", help="specify the google TLD to query i.e. com, co.in, jp...")
-        parser.add_argument("--brute-file", help="dictionary file for url bruteforcing")
-        parser.add_argument("--brute-include-codes", help="HTTP codes to include in results")
+        parser.add_argument("--dorks-file", type=str, help="File containing google dorks to use")
+        parser.add_argument("--dorks-tld", type=str, help="specify the google TLD to query i.e. com, co.in, jp...")
+        parser.add_argument("--brute-file", type=str, help="dictionary file for url bruteforcing")
+        parser.add_argument("--brute-include-codes", type=str, help="HTTP codes to include in results")
         parser.add_argument("--brute-print-404", action="store_true", help="Print requests that match the website default 404 page")
-        parser.add_argument("--threads",type=int, help="Max number of threads in bruteforce tasks")
         args = vars(parser.parse_args(args))
 
         #------GENERAL PARAMS------
@@ -91,6 +93,7 @@ class Settings():
         self.outputFile = self._parseInput(args, "o")
         self.threads = self._parseInput(args, "threads", self.DEFAULT_THREADS)
         self.quiet = args["q"]
+        self.verbose = args["v"]
 
         #------REQUESTS PARAMS------
         self.url, self.domain, self.domainSimple, self.port, self.method = RequestsUtility.parseUrl(args["url"])
@@ -104,14 +107,14 @@ class Settings():
         self.whoisGetRemoteFile = None
 
         if args["whois_server"]:
-            self.whoisServer = args["whois_server"][0]
+            self.whoisServer = args["whois_server"]
         elif args["whois_server_file"]:
-            self.whoisFromFile = args["whois_server_file"][0]
+            self.whoisFromFile = args["whois_server_file"]
         elif args["whois_get_servers"]:
-            self.whoisGetRemoteFile = args["whois_get_servers"][0]
+            self.whoisGetRemoteFile = args["whois_get_servers"]
 
         #-----DNS PARAMS------
-        self.dnsServer = self._parseInput(args, "dns_server", self.DEFAULT_DNS_SERVER)
+        self.dnsServer = self._parseInput(args, "dns_server", self.DEFAULT_DNS_SERVER, self.SEPARATOR)
         self.dnsRecords = self._parseInput(args, "dns_records", self.DEFAULT_DNS_RECORDS, self.SEPARATOR)
 
         #-----TRACE PARAMS------
@@ -140,12 +143,12 @@ class Settings():
         else:
             return altValue
         
-    def _parseMultiValueParam(self, input:list, sep:str, altValue:str=None):
+    def _parseMultiValueParam(self, input:list, sep:str=None, altValue:str=None):
         dict = {}
         if input:
             for subList in input:
                 for entry in subList:
-                    if sep in entry:
+                    if sep and sep in entry:
                         items = entry.split(sep,1)
                         dict[items[0].strip()] = items[1].strip()
             return dict
@@ -180,7 +183,8 @@ class OutputWriter():
         self.outputFile = None
         coloramaInit()
 
-    def printAppBanner(self):
+    @staticmethod
+    def printAppBanner():
         banner = '''
                                            .##..
                                            ..###..
@@ -216,8 +220,16 @@ class OutputWriter():
         termWidth = Environment().termWidth
     
         if termWidth and termWidth >= OutputWriter.BANNER_MIN_TERM_SIZE:
-            print(f"{OutputWriter.msgType.DEFAULT.value[0][0]}{banner}{OutputWriter.msgType.END.value}")
-        
+            print(OutputWriter.msgType.DEFAULT.value[0][0] + banner + OutputWriter.msgType.END.value)
+    
+    @staticmethod
+    def printInfoText(input:str, module=None):
+        msg = input
+        if module and module.bannerName:
+            msg = f"{module.bannerName}: {input}"
+
+        print(OutputWriter.msgType.INFO.value[0][0] + msg + OutputWriter.msgType.END.value + "\n")
+
     def setOutputFile(self, path:str):
         self.outputFile = open(path, "w")
 
@@ -352,9 +364,8 @@ class OutputWriter():
 
 
 class EnumComponent(ABC):
-    def __init__(self, bannerName:str, settings:Settings, outputWriter):
+    def __init__(self, bannerName:str, settings:Settings):
         self.settings = settings
-        self.outputWriter = outputWriter
         self.bannerName = bannerName
     
     @abstractmethod
@@ -467,28 +478,29 @@ class RequestsUtility():
             return self.session.cookies
         return None
 
-    def sockRequest(self, url:str, port:int, body:str=None, udp:bool=False):
+    def createSocket(self, proto:str=None):
         if not Environment().isUserAdmin:
             raise EnumException(self.caller, f"Administrative privileges are required to open sockets", None)
-
-        if udp:
-            sc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        else:
-            sc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+        if proto == "icmp":
+            return socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname('icmp'))
+        if proto == "udp":
+            return socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.getprotobyname('udp'))
+        return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    
+    def sockRequest(self, url:str, port:int, body:str=None):       
+        sc = self.createSocket()
 
         try:      
             sc.settimeout(self.timeout)
             sc.connect((url, port))
-            if body:
-                sc.send(body.encode())
+            sc.send(body.encode())
             return sc
         except socket.error as e:
+            sc.close()
             raise EnumException(self.caller, f"Unable to connect to {url}:{port}", e)
 
-    def sockSendbytes(self, sock, body:bytes, url:str, port:int, timeout:int=None):
-        if not Environment().isUserAdmin:
-            raise EnumException(self.caller, f"Administrative privileges are required to open sockets", None)
-        
+    def sockSendbytes(self, sock, body:bytes, url:str, port:int, timeout:int=None):        
         timeout = timeout if timeout else self.timeout
         sock.settimeout(timeout)
         try:
@@ -496,19 +508,7 @@ class RequestsUtility():
             return sock
         except socket.error as e:
             raise EnumException(self.caller, f"Unable to connect to {url}:{port}", e)
-
-    def sockReceiver(self, port:int):
-        if not Environment().isUserAdmin:
-            raise EnumException(self.caller, f"Administrative privileges are required to open sockets", None)
-        
-        try:
-            sc = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
-            sc.bind(("",port))
-            sc.settimeout(self.timeout)
-            return sc
-        except socket.error as e:
-            raise EnumException(self.caller, f"Listener binding failed on port {port}. This port is possibly being used by another application", e)
-    
+  
     def sockReceive(self, sock, size: int= 512):
         try:
             sock.settimeout(self.timeout)
@@ -576,26 +576,34 @@ class RequestsUtility():
 
 
 class FileUtility():
-    def __init__(self, split:bool=False, separator:str=None, commentSymbol:str=None):
+    def __init__(self, caller:EnumComponent, split:bool=False, separator:str=None, commentSymbol:str=None):
         self.commentSymbol = commentSymbol
         self.split = split
         self.sep = separator if split and separator else None
+        self.caller = caller
 
     def readFile(self, path:str):
         rows = []
-        with open(path, 'r') as f:
-            for line in f:
-                if not self.commentSymbol or (self.commentSymbol and not line.startswith(self.commentSymbol)):
-                    values = line if self.split else line
-                    if self.split:
-                        rows.append([l.strip() for l in line.split(self.sep)])
-                    else:
-                        rows.append(line.strip())
-        return rows
+        try:
+            with open(path, 'r') as f:
+                for line in f:
+                    if not self.commentSymbol or (self.commentSymbol and not line.startswith(self.commentSymbol)):
+                        values = line if self.split else line
+                        if self.split:
+                            rows.append([l.strip() for l in line.split(self.sep)])
+                        else:
+                            rows.append(line.strip())
+            return rows
+        except OSError as e:
+            raise EnumException(self.caller, f"Failed to open file {path} with error {e.errno} - {e.strerror}", e)
 
     def createFromRequest(self, req:RequestsUtility, url:str, dest:str):
-        response = req.httpRequest(url)
-        open(dest, "wb").write(response.content)
+        try:
+            response = req.httpRequest(url)
+            with open(dest, "wb") as f:
+                f.write(response.content)
+        except OSError as e:
+            raise EnumException(self.caller, f"Failed to write to file {dest} with error {e.errno} - {e.strerror}", e)
         
 
 #-----------------MODULES-----------------
@@ -604,22 +612,22 @@ class WhoisComponent(EnumComponent):
     FILE_COMMENT = ";"
     FILE_URL = "https://www.nirsoft.net/whois-servers.txt"
     
-    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+    def __init__(self, settings:Settings):
         self.domain = settings.domainSimple
         self.server = settings.whoisServer
         self.filePath = settings.whoisFromFile
         self.remoteFileDest = settings.whoisGetRemoteFile
+        self.verbose = settings.verbose
 
         self.req = RequestsUtility(self, settings)
-        self.fileUtil = FileUtility(True, commentSymbol= WhoisComponent.FILE_COMMENT)
-        super().__init__("WHOIS RECORDS",settings, outputWriter)
+        self.fileUtil = FileUtility(self, True, commentSymbol= WhoisComponent.FILE_COMMENT)
+        super().__init__("WHOIS RECORDS",settings)
 
     def getResult(self): 
         if self.server:
             return self._whois(self.server)
         if self.filePath:
             servers = self.fileUtil.readFile(self.filePath)
-            print(servers)
             return self._whois(self._pickServer(servers))
         if self.remoteFileDest:
             self.fileUtil.createFromRequest(self.req, WhoisComponent.FILE_URL, self.remoteFileDest)
@@ -637,6 +645,10 @@ class WhoisComponent(EnumComponent):
 
     def _whoisIana(self):
         request = f"https://www.iana.org/whois?q={self.domain}"
+
+        if self.verbose:
+            OutputWriter.printInfoText(f"Sending HTTP request to: {request}", self)
+
         response = self.req.httpRequest(request)
 
         if response.status_code == 200 and response.text:
@@ -650,6 +662,9 @@ class WhoisComponent(EnumComponent):
             return f"Connection failed. Response code: {self.req.formatResponseCode(response)}"
     
     def _whois(self,server):
+        if self.verbose:
+            OutputWriter.printInfoText(f"Contacting whois server {server}", self)
+
         query = f'{self.domain}\r\n'
         connection = self.req.sockRequest(server,43,query)
         response = ""
@@ -664,25 +679,18 @@ class WhoisComponent(EnumComponent):
 
 
 class DnsComponent(EnumComponent):
-    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
-        super().__init__("DNS RECORDS", settings, outputWriter)
+    def __init__(self, settings:Settings):
+        super().__init__("DNS RECORDS", settings)
         self.domain = settings.domain
-        self.servers = settings.dnsServer
         self.records = settings.dnsRecords
         self.resolver = dns.resolver.Resolver()
+        self.resolver.nameservers = settings.dnsServer
         
     def reverse(self,address):
          addr=dns.reversename.from_address(address).to_text()
          result = self.dnsSingleQuery(addr,"PTR")
          return result[0] if result else addr
-    
-    def dnsSingleQuery(self,target:str,record:str):
-        try:
-            result = self.resolver.resolve(target,record)
-            return [i.to_text() for i in result]
-        except DNSException:
-            return None
-    
+
     def getResult(self):
         results = {}
         for r in self.records:
@@ -696,15 +704,15 @@ class DnsComponent(EnumComponent):
 
 
 class TraceComponent(EnumComponent):
-    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
-        super().__init__("TRACEROUTE", settings, outputWriter)
-        self.dns = DnsComponent(settings, outputWriter)
+    def __init__(self, settings:Settings):
+        super().__init__("TRACEROUTE", settings)
         self.domain = settings.domain
-        self.destPort = settings.port
-        self.port = settings.tracePort
+        self.destPort = settings.tracePort
+        self.port = settings.port
         self.ttl = settings.traceTtl
-        self.timeout = settings.traceTimeout
+        self.timeout = settings.timeout
         self.showGateway = settings.traceShowGateway
+        self.verbose = settings.verbose
 
         self.req = RequestsUtility(self)
 
@@ -724,20 +732,26 @@ class TraceComponent(EnumComponent):
         }
 
     def trace(self, destAddress):
-        rec = self.req.sockReceiver(self.port)
-        snd = self.req.sockRequest(self.domain, self.destPort, udp=True)
-
         currAddress = ""
         gatewayAddr = None
         counter = 0
         hops = []
         success = False
         note = None
+        lastBeforeError = None
+        totalTime = 0
 
         for hop in range(1, self.ttl+1):
+            rec = self.req.createSocket("icmp")
+            snd = self.req.createSocket("udp")
+            rec.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, struct.pack("ll", 5, 0))
+            snd.setsockopt(socket.SOL_IP, socket.IP_TTL, hop)
+
+            if self.verbose:
+                OutputWriter.printInfoText(f"Current hop: {hop}/{self.ttl+1}", self)
+
             if currAddress != destAddress:
-                snd.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, hop)
-                self.req.sockSendbytes(snd, b"", destAddress, self.port)
+                self.req.sockSendbytes(snd, b"", destAddress, self.destPort)
                 sendTime = time.perf_counter_ns()
                 response = self.req.sockReceive(rec)
                 if response:
@@ -746,7 +760,9 @@ class TraceComponent(EnumComponent):
                     hostname = self.req.dnsReverseLookup(currAddress)
                     recTime = time.perf_counter_ns()
                     elapsed = (recTime - sendTime) / 1e6
+                    totalTime += elapsed
                 else:
+                    lastBeforeError = currAddress
                     currAddress = None
                     elapsed = None
                     hostname = None
@@ -755,18 +771,25 @@ class TraceComponent(EnumComponent):
                     hops.append((str(counter),currAddress,hostname,f"{elapsed:.2f}" if elapsed else None))
                     if not gatewayAddr:
                         gatewayAddr = hostname
+                snd.close()
+                rec.close()
             else:
                 success = True
-                break        
+                note = f"Destination host reached in {hop} hops. The trip lasted {totalTime/1000:.2f} seconds"
+                
+                #close last
+                snd.close()
+                rec.close()
+                break    
 
         if not success:
             #the variable hostname records the last host visited. If populated it means the target was not reachable within the specified ttl.
             #If the variable is None it means the last request was not completed possibily due to a timeout or host unreachable error
 
             if hostname:
-                note = f"Unable to reach target within {self.ttl} hops"
+                note = f"Unable to reach target within {self.ttl} hops. Last destination reached: {hostname}"
             else:
-                note = f"Destination unreachable due to request timeout"
+                note = f"Destination unreachable due to request timeout. Request that failed: {lastBeforeError}"
 
         return {
             "success": success,
@@ -810,16 +833,17 @@ class SSLComponent(EnumComponent):
                                         block=block,
                                         ssl_version=self.sslVersion)
             
-    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+    def __init__(self, settings:Settings):
         self.domain = settings.domain
         self.port = settings.port
         self.useOsLibrary = settings.useOsLibrary
+        self.verbose = settings.verbose
 
         self.ctx = ssl.create_default_context()
         self.ctx.check_hostname = False
         self.ctx.verify_mode = ssl.CERT_NONE
         
-        super().__init__("CERTIFICATE AND SSL", settings, outputWriter)
+        super().__init__("CERTIFICATE AND SSL", settings)
 
     def getResult(self) -> dict:
         results = self._getSSLInfoExt() if self.useOsLibrary else self._getSSLInfo()
@@ -850,12 +874,18 @@ class SSLComponent(EnumComponent):
                     ("TLS 1.3", ssl.PROTOCOL_TLSv1_3 if hasattr(ssl,"PROTOCOL_TLSv1_3") else None)
                 ]      
         
+        if self.verbose:
+            OutputWriter.printInfoText("Testing TLS/SSL protocols", self)
+
         for f in formats:
             fname, fvalue = f
             if fvalue:
                 proto.append((fname, self._testSSL(fvalue)))
             else:
                 proto.append((fname, "Unsupported client side"))
+
+        if self.verbose:
+            OutputWriter.printInfoText("Testing supported ciphers", self)
 
         for cipher in self.ctx.get_ciphers():
             try:
@@ -941,6 +971,9 @@ class SSLComponent(EnumComponent):
 
    
     def certInfo(self):
+        if self.verbose:
+            OutputWriter.printInfoText("Retrieving certificate", self)
+
         with self.ctx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
             sock.connect((self.domain, self.port))
             certDER = sock.getpeercert(True)
@@ -986,10 +1019,12 @@ class SSLComponent(EnumComponent):
     
 
 class HTTPComponent(EnumComponent):
-    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
+    def __init__(self, settings:Settings):
         self.url = settings.url
         self.req = RequestsUtility(self, settings, True)
-        super().__init__("HTTP REQUESTS", settings, outputWriter)
+        self.verbose = settings.verbose
+        
+        super().__init__("HTTP REQUESTS", settings)
 
     def getResult(self) -> dict:
         return {
@@ -1044,6 +1079,9 @@ class HTTPComponent(EnumComponent):
         }
     
     def testHTTPMethods(self):
+        if self.verbose:
+            OutputWriter.printInfoText("Testing supported methods", self)
+
         results = {}
 
         for method in self.req.METHODS.keys():
@@ -1053,12 +1091,49 @@ class HTTPComponent(EnumComponent):
 
 
 class WebEnumComponent(EnumComponent):
-    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
-        super().__init__("WEBSITE ENUMERATION", settings, outputWriter)
+    def __init__(self, settings:Settings):
+        super().__init__("WEBSITE ENUMERATION", settings)
         self.url = settings.url
         self.req = RequestsUtility(self, settings)
+        self.verbose = settings.verbose
 
+    def getResult(self):
+        response = self.req.httpRequest(self.url)
+        soup = BeautifulSoup(response.text,"html.parser")
+        robots = self.parseRobotsFile()
+
+        if self.verbose:
+            OutputWriter.printInfoText(f"Scanning included resources", self)
+    
+        return {
+            "Title": soup.head.title.string,
+            "Favicon": self._getFavicon(soup),
+            "HTML params": soup.find("html").attrs,
+            "Meta Tags": soup.find_all("meta"),
+            "Included scripts": [script["src"].strip() for script in soup.find_all("script",{"src":True}) if script["src"].strip()],
+            "Included stylesheets": [link["href"].strip() for link in soup.find_all("link", rel="stylesheet") if link["href"].strip()],
+            "Robots entries": robots,
+            "Sitemap entries": self.getSitemap(robots["Sitemap"]),
+            "Page links": list(set([link["href"].strip() for link in soup.find_all("a",{"href":True}) if link["href"].strip()])),
+            "Comments": [line.strip() for line in soup.find_all(string = lambda text: isinstance(text,Comment)) if line.strip()]
+            
+        }
+    
+    def _getFavicon(self, soup):
+        val = soup.find("link", attrs={'rel': re.compile("^(shortcut icon|icon)$", re.I)})
+        if val:
+            return val["href"]
+             
+        val = soup.find("meta", property="og:image")["content"]
+        if val:
+            return val["content"]
+        return val
+
+    
     def getSitemap(self, extraUrls:list=None):
+        if self.verbose:
+            OutputWriter.printInfoText(f"Scanning sitemaps", self)
+    
         urls = ["sitemap","wp-sitemap","sitemap_index","post-sitemap","page-sitemap","pages-sitemap","category-sitemap","tag-sitemap"]
 
         if extraUrls:
@@ -1076,6 +1151,9 @@ class WebEnumComponent(EnumComponent):
         return None
     
     def parseRobotsFile(self):
+        if self.verbose:
+            OutputWriter.printInfoText(f"Scanning robots file", self)
+
         response = self.req.httpRequest(self.url+"/robots.txt")
         robots = None
         if(response.status_code == 200 and response.text):
@@ -1095,7 +1173,8 @@ class WebEnumComponent(EnumComponent):
                     if newUa != currentUa:
                         entries["User Agent: {}".format(currentUa)] = {
                             "Allowed entries": allowedEntries,
-                            "Disallowed entries:": disallowedEntries}
+                            "Disallowed entries:": disallowedEntries
+                            }
                         currentUa = newUa
 
                 if l.startswith("Allow"):
@@ -1114,26 +1193,8 @@ class WebEnumComponent(EnumComponent):
                 "Sitemap": sitemaps,
                 "Entries": entries
             }
-
-    def getResult(self):
-        response = self.req.httpRequest(self.url)
-        soup = BeautifulSoup(response.text,"html.parser")
-        favicon = soup.find("link", rel="shortcut icon")
-        robots = self.parseRobotsFile()
-    
-        return {
-            "Title": soup.head.title.string,
-            "Favicon": favicon["href"] if favicon else None,
-            "HTML params": soup.find("html").attrs,
-            "Meta Tags": soup.find_all("meta"),
-            "Included scripts": [script["src"].strip() for script in soup.find_all("script",{"src":True}) if script["src"].strip()],
-            "Included stylesheets": [link["href"].strip() for link in soup.find_all("link", rel="stylesheet") if link["href"].strip()],
-            "Robots entries": robots,
-            "Sitemap entries": self.getSitemap(robots["Sitemap"]),
-            "Page links": list(set([link["href"].strip() for link in soup.find_all("a",{"href":True}) if link["href"].strip()])),
-            "Comments": [line.strip() for line in soup.find_all(string = lambda text: isinstance(text,Comment)) if line.strip()]
-            
-        }
+        
+        return None
 
     def _sitemapReq(self,url:str):
         headers = {"User-Agent": "Googlebot/2.1"}
@@ -1144,7 +1205,7 @@ class WebEnumComponent(EnumComponent):
             r  = self.req.httpRequest(url)
             if r.status_code == 200 and r.text:
                 sitemapType = "xml"
-                soup = BeautifulSoup(r.text, "lxml")
+                soup = BeautifulSoup(r.text, features="xml")
                 sitemapTags = soup.find_all("sitemap")
                 sitemapEntries = []
                 
@@ -1181,14 +1242,16 @@ class DorksComponent(EnumComponent):
         "https://maps.google.com/maps"
     )
 
-    def __init__(self, settings:Settings, outputWriter:OutputWriter=None):
-        super().__init__("GOOGLE DORKS", settings, outputWriter)
+    def __init__(self, settings:Settings):
+        super().__init__("GOOGLE DORKS", settings)
 
         if not settings.dorksFile:
             raise EnumException(self, "A dictionary file must be specified with the flag --dorks-file", None)
 
         self.dorksFile = settings.dorksFile
         self.domain = settings.domain
+        self.verbose = settings.verbose
+
         self.startPage = 0
         self.googleTLD = settings.dorksTld
         self.baseUrl = f"https://www.google.{self.googleTLD}/search"
@@ -1196,10 +1259,17 @@ class DorksComponent(EnumComponent):
         self.req = RequestsUtility(self, headers=DorksComponent.HEADERS)
 
     def getResult(self):
-        dorks = FileUtility(split=True, separator=";;").readFile(self.dorksFile)
+        dorks = FileUtility(self, split=True, separator=";;").readFile(self.dorksFile)
         results = []
 
+        entries = len(dorks)
+        counter = 1
+
         for dork in dorks:
+            if self.verbose:
+                OutputWriter.printInfoText(f"Testing entry {counter}/{entries}", self)
+                counter += 1
+
             if len(dork) == 2:
                 dorkStr, comment = dork
             else:
@@ -1235,8 +1305,8 @@ class DorksComponent(EnumComponent):
 class BruteforceModule(EnumComponent):
     RANDOM_URL_LENGTH = 20
 
-    def __init__(self, settings: Settings, outputWriter=None):
-        super().__init__("URL BRUTEFORCER", settings, outputWriter)
+    def __init__(self, settings: Settings):
+        super().__init__("URL BRUTEFORCER", settings)
 
         if not settings.bruteFile:
             raise EnumException(self, "A dictionary file must be specified with the flag --brute-file", None)
@@ -1247,20 +1317,30 @@ class BruteforceModule(EnumComponent):
         self.extensions = None
         self.domain = settings.url
         self.threads = settings.threads
+        self.verbose = settings.verbose
         self.req = RequestsUtility(self, settings, followRedirects=True)
 
     def getResult(self):
+        if self.verbose:
+            OutputWriter.printInfoText(f"Detecting default 404 page", self)
+
         fourOhFour = self.getFourOhFourPage()
         excludeUrl = fourOhFour["Redirects"][-1] if fourOhFour else None
         excludeSize = fourOhFour["Response Size"] if fourOhFour else None
 
-        urls = FileUtility().readFile(self.file)
+        urls = FileUtility(self).readFile(self.file)
         results = []
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as threadPool:
             threads = {threadPool.submit(self._worker, url, excludeUrl, excludeSize): url for url in urls}
+            completedCounter = 1
+            urlCount = len(urls)
 
             for thread in concurrent.futures.as_completed(threads):
+                if self.verbose:
+                    OutputWriter.printInfoText(f"Threads completed: {completedCounter}/{urlCount}", self)
+                    completedCounter += 1
+
                 res = thread.result()
                 if res:
                     results.append(thread.result())        
