@@ -1,6 +1,5 @@
 import struct
-import dns
-from dns import resolver
+import dns.resolver
 from dns.exception import DNSException
 import socket, ssl, OpenSSL
 from ssl import SSLError
@@ -160,7 +159,7 @@ class OutputWriter():
         DEFAULT = (Fore.GREEN,"",""),
         BANNER = (Fore.YELLOW, Back.GREEN, Style.BRIGHT),
         ARGNAME = (Fore.GREEN, "", Style.BRIGHT),
-        INFO = (Fore.BLUE,"",""),
+        INFO = (Fore.CYAN,"",""),
         SUCCESS = (Fore.GREEN, "", ""),
         WARN = (Fore.YELLOW,"",""),
         ERROR = (Fore.RED,"", ""),
@@ -230,6 +229,15 @@ class OutputWriter():
 
         print(OutputWriter.msgType.INFO.value[0][0] + msg + OutputWriter.msgType.END.value + "\n")
 
+    def getBanner(self, input):
+        if isinstance(input, EnumComponent):
+            value = input.bannerName
+        else:
+            value = str(input)
+        
+        banner = f"{'='*OutputWriter.BANNER_PADDING} {value} {'='*OutputWriter.BANNER_PADDING}"
+        return self.applyStyle(banner,OutputWriter.msgType.BANNER, extraVertSpace=1)
+
     def setOutputFile(self, path:str):
         self.outputFile = open(path, "w")
 
@@ -244,7 +252,7 @@ class OutputWriter():
     def getErrorString(self, input:str):
         return self.applyStyle(input, OutputWriter.msgType.ERROR)
 
-    def applyStyle(self, input:str, type=msgType.DEFAULT, indent:int=0):
+    def applyStyle(self, input:str, type=msgType.DEFAULT, indent:int=0, extraVertSpace:int=0):
 
         if isinstance (input, bytes):
             try:
@@ -261,10 +269,10 @@ class OutputWriter():
             else:
                 input = self.INDENT*indent + input
 
-        self.writeToFile(input+"\n" if addNewline else input)
+        self.writeToFile(("\n" * extraVertSpace) + input + ("\n" if addNewline else "") + ("\n" * extraVertSpace))
 
         fore, back, style = type.value[0]
-        return fore + back + style + input + OutputWriter.msgType.END.value + ("\n" if addNewline else "")
+        return ("\n" * extraVertSpace) + fore + back + style + input + OutputWriter.msgType.END.value + ("\n" if addNewline else "") + ("\n" * extraVertSpace)
     
     def applyStyleTuple(self, input:tuple, indent:int):
         argName, argValue = input
@@ -340,15 +348,6 @@ class OutputWriter():
             return strOut+"\n"
         else:
             return strOut
-    
-    def getBanner(self, input):
-        if isinstance(input, EnumComponent):
-            value = input.bannerName
-        else:
-            value = str(input)
-        
-        banner = f"{'='*self.BANNER_PADDING} {value} {'='*self.BANNER_PADDING}"
-        return self.applyStyle(banner,OutputWriter.msgType.BANNER)
     
     def _toStr(self, input) -> str:
         if input == None:
@@ -750,7 +749,7 @@ class TraceComponent(EnumComponent):
             snd.setsockopt(socket.SOL_IP, socket.IP_TTL, hop)
 
             if self.verbose:
-                OutputWriter.printInfoText(f"Current hop: {hop}/{self.ttl+1}", self)
+                OutputWriter.printInfoText(f"Current hop: {hop}/{self.ttl}", self)
 
             if currAddress != destAddress:
                 self.req.sockSendbytes(snd, b"", destAddress, self.destPort)
