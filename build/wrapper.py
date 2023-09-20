@@ -31,7 +31,7 @@ def preloadExe(args:list):
     except KeyboardInterrupt:
         print("Interrupt detected")
     except Exception as e:
-        print("Unexpected error:\n{e}")
+        print(f"Unexpected error:\n{e.strerror}")
     finally:
         if not fromTerm:
             #Prevent terminal from closing

@@ -186,7 +186,7 @@ class OutputWriter():
     @staticmethod
     def printAppBanner():
         banner = '''
-                                           .##..
+                                           ..##..
                                            ..###..
                                             .####..
                                              .####..
@@ -674,6 +674,8 @@ class WhoisComponent(EnumComponent):
             if (chunk == ''):
                 break
             response = response + chunk
+
+        connection.close()
    
         return response
 
@@ -1118,8 +1120,16 @@ class WebEnumComponent(EnumComponent):
             "Comments": [line.strip() for line in soup.find_all(string = lambda text: isinstance(text,Comment)) if line.strip()]
             
         }
-    
+         
     def _getFavicon(self, soup):
+        url = self._getFaviconUrl(soup)
+        if url:
+            if url.startswith("/"):
+                return self.url+url 
+            return url
+        return None
+    
+    def _getFaviconUrl(self, soup):
         val = soup.find("link", attrs={'rel': re.compile("^(shortcut icon|icon)$", re.I)})
         if val:
             return val["href"]
