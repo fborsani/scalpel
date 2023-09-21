@@ -4,7 +4,7 @@ import platform
 
 block_cipher = None
 a = Analysis(
-    ['wrapper.py', '../scalpel.py'],
+    ['../wrapper.py'],
     pathex=[],
     binaries=[],
     datas=[],

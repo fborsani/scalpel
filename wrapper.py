@@ -1,6 +1,5 @@
 import os, sys, ctypes, platform
-sys.path.insert(0, '..')
-import scalpel
+import scalpel.scalpel
 import psutil
 
 def checkTerm():
@@ -38,16 +37,18 @@ def preloadExe(args:list):
             input("Press ENTER to close...")
 
 def preloadElf(args:list):
+    print("WRAPPER ELF")
     appName = "scalpel"
     try:
         scalpel.Scan(appName, args).run()
+        print("EXECUTION ENDED")
     except KeyboardInterrupt:
         print("Interrupt detected")
  
-if __name__ == '__main__':
+def main():
     args = sys.argv[1:]
-    
     if platform.system() == "Windows":
         preloadExe(args)
     else:
         preloadElf(args)
+main()

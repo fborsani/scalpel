@@ -469,7 +469,7 @@ class RequestsUtility():
                                         params=params) 
         except requests.ConnectionError as e:
             raise EnumException(self.caller, f"Unable to connect to {url}", e)
-        except requests.ConnectTimeout as e:
+        except requests.exceptions.ConnectTimeout as e:
             raise EnumException(self.caller, f"Request to {url} has timed out", e)
 
     def getSessionCookies(self):
@@ -1133,7 +1133,7 @@ class WebEnumComponent(EnumComponent):
         if val:
             return val["href"]
              
-        val = soup.find("meta", property="og:image")["content"]
+        val = soup.find("meta", property="og:image")
         if val:
             return val["content"]
         return val
@@ -1439,5 +1439,3 @@ class Scan():
 
 if __name__ == '__main__':
     Scan().run()
-
-        
