@@ -37,11 +37,9 @@ def preloadExe(args:list):
             input("Press ENTER to close...")
 
 def preloadElf(args:list):
-    print("WRAPPER ELF")
     appName = "scalpel"
     try:
         scalpel.Scan(appName, args).run()
-        print("EXECUTION ENDED")
     except KeyboardInterrupt:
         print("Interrupt detected")
  
