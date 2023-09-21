@@ -1,5 +1,5 @@
 import os, sys, ctypes, platform
-import scalpel.scalpel
+import scalpel.scalpel as scalpel
 import psutil
 
 def checkTerm():
