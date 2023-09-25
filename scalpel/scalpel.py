@@ -45,8 +45,7 @@ class Environment():
 
 
 class Settings():
-    DEFAULT_DNS_SERVER = ["8.8.8.8"]
-    DEFAULT_DNS_RECORDS = ["A","AAAA","CNAME","PTR","MX","SOA","TXT"]
+    DEFAULT_DNS_RECORDS = ["A","AAAA","CNAME","NS","PTR","MX","SOA","TXT"]
 
     DEFAULT_TRACE_PORT = 33434
     DEFAULT_TRACE_TTL = 30
@@ -113,7 +112,7 @@ class Settings():
             self.whoisGetRemoteFile = args["whois_get_servers"]
 
         #-----DNS PARAMS------
-        self.dnsServer = self._parseInput(args, "dns_server", self.DEFAULT_DNS_SERVER, self.SEPARATOR)
+        self.dnsServer = self._parseInput(args, "dns_server", None, self.SEPARATOR)
         self.dnsRecords = self._parseInput(args, "dns_records", self.DEFAULT_DNS_RECORDS, self.SEPARATOR)
 
         #-----TRACE PARAMS------
@@ -485,7 +484,20 @@ class RequestsUtility():
             return socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname('icmp'))
         if proto == "udp":
             return socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.getprotobyname('udp'))
-        return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        return socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
+
+    def createListener(self):
+        if Environment().isWindows:
+            host = RequestsUtility.whoami()
+            rec = self.createSocket("icmp")
+            rec.bind((host,0))
+            rec.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
+            rec.ioctl(socket.SIO_RCVALL, socket.RCVALL_ON)
+        else:
+            rec = self.createSocket("icmp")
+            rec.bind(("",0))
+            rec.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, struct.pack("ll", 5, 0))
+        return rec
     
     def sockRequest(self, url:str, port:int, body:str=None):       
         sc = self.createSocket()
@@ -514,6 +526,10 @@ class RequestsUtility():
             return sock.recvfrom(size)
         except socket.error:
             return None          
+    
+    @staticmethod    
+    def whoami():
+        return socket.gethostbyname(socket.gethostname())
 
     @staticmethod
     def dnsReverseLookup(ip:str, server:list=None):
@@ -685,14 +701,16 @@ class DnsComponent(EnumComponent):
         self.domain = settings.domain
         self.records = settings.dnsRecords
         self.resolver = dns.resolver.Resolver()
-        self.resolver.nameservers = settings.dnsServer
+        if settings.dnsServer:
+            self.resolver.nameservers = settings.dnsServer
         
-    def reverse(self,address):
-         addr=dns.reversename.from_address(address).to_text()
-         result = self.dnsSingleQuery(addr,"PTR")
-         return result[0] if result else addr
-
     def getResult(self):
+        return {
+            "DNS Server info": self._serverInfo(),
+            "Results": self._queryDns()
+        }
+        
+    def _queryDns(self):
         results = {}
         for r in self.records:
             try:
@@ -703,6 +721,24 @@ class DnsComponent(EnumComponent):
             results[r] = record
         return results
 
+    def _serverInfo(self):
+        results = {}
+        results["DNS Server"] = self.resolver.nameservers
+
+        try:
+            NxServer = [i.to_text() for i in self.resolver.resolve(self.domain, "NS")]
+            servers = []
+            for s in NxServer:
+                servers.append(f"{s} ({self.resolver.resolve(s,'A')[0].to_text()})")
+        except DNSException:
+            servers = None
+
+        return {
+            "DNS Server": self.resolver.nameservers,
+            "Authoritative Server": servers
+        }
+
+
 
 class TraceComponent(EnumComponent):
     def __init__(self, settings:Settings):
@@ -712,13 +748,13 @@ class TraceComponent(EnumComponent):
         self.port = settings.port
         self.ttl = settings.traceTtl
         self.timeout = settings.timeout
-        self.showGateway = settings.traceShowGateway
+        self.dnsServer = settings.dnsServer
         self.verbose = settings.verbose
 
         self.req = RequestsUtility(self)
 
     def getResult(self):
-        destAddress = self.req.dnsSingleQuery(self.domain,"A")
+        destAddress = self.req.dnsSingleQuery(self.domain, "A", self.dnsServer)
         if not destAddress or not destAddress[0]:
             raise EnumException(self, "Unable to resolve destination")
         
@@ -734,7 +770,7 @@ class TraceComponent(EnumComponent):
 
     def trace(self, destAddress):
         currAddress = ""
-        gatewayAddr = None
+        currHost = self.req.whoami()
         counter = 0
         hops = []
         success = False
@@ -743,45 +779,38 @@ class TraceComponent(EnumComponent):
         totalTime = 0
 
         for hop in range(1, self.ttl+1):
-            rec = self.req.createSocket("icmp")
+            rec = self.req.createListener()
             snd = self.req.createSocket("udp")
-            rec.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, struct.pack("ll", 5, 0))
-            snd.setsockopt(socket.SOL_IP, socket.IP_TTL, hop)
+            snd.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, hop)
 
             if self.verbose:
                 OutputWriter.printInfoText(f"Current hop: {hop}/{self.ttl}", self)
 
-            if currAddress != destAddress:
-                self.req.sockSendbytes(snd, b"", destAddress, self.destPort)
-                sendTime = time.perf_counter_ns()
-                response = self.req.sockReceive(rec)
-                if response:
-                    _, currAddress = response
-                    currAddress = currAddress[0]
-                    hostname = self.req.dnsReverseLookup(currAddress)
-                    recTime = time.perf_counter_ns()
-                    elapsed = (recTime - sendTime) / 1e6
-                    totalTime += elapsed
-                else:
-                    lastBeforeError = currAddress
-                    currAddress = None
-                    elapsed = None
-                    hostname = None
-                if self.showGateway or not (self.showGateway or gatewayAddr == hostname):
+            self.req.sockSendbytes(snd, b"", destAddress, self.destPort)
+            sendTime = time.perf_counter_ns()
+            response = self.req.sockReceive(rec)
+            if response:
+                _, currAddress = response
+                currAddress = currAddress[0]
+                hostname = self.req.dnsReverseLookup(currAddress, self.dnsServer)
+                recTime = time.perf_counter_ns()
+                elapsed = (recTime - sendTime) / 1e6
+                totalTime += elapsed
+                
+                if hostname != currHost:
                     counter += 1
                     hops.append((str(counter),currAddress,hostname,f"{elapsed:.2f}" if elapsed else None))
-                    if not gatewayAddr:
-                        gatewayAddr = hostname
-                snd.close()
-                rec.close()
             else:
-                success = True
-                note = f"Destination host reached in {hop} hops. The trip lasted {totalTime/1000:.2f} seconds"
+                lastBeforeError = currAddress
                 
-                #close last
-                snd.close()
-                rec.close()
-                break    
+            snd.close()
+            rec.close()
+
+            if currAddress == destAddress:
+                success = True
+                note = f"Destination host reached in {counter} hops. The trip lasted {totalTime/1000:.2f} seconds"
+                break
+
 
         if not success:
             #the variable hostname records the last host visited. If populated it means the target was not reachable within the specified ttl.
