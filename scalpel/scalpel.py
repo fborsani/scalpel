@@ -90,11 +90,12 @@ class Settings():
         self.operations = self._parseInput(args, "a", self.DEFAULT_OPERATIONS, self.SEPARATOR)
         self.outputFile = self._parseInput(args, "o")
         self.threads = self._parseInput(args, "threads", self.DEFAULT_THREADS)
+        self.dnsServer = self._parseInput(args, "dns_server", None, self.SEPARATOR)
         self.quiet = args["q"]
         self.verbose = args["v"]
 
         #------REQUESTS PARAMS------
-        self.url, self.domain, self.domainSimple, self.port, self.method = RequestsUtility.parseUrl(args["url"])
+        self.url, self.domain, self.tld, self.port = RequestsUtility.parseUrl(args["url"])
         self.headers = self._parseMultiValueParam(args["H"],":")
         self.cookies = self._parseMultiValueParam(args["C"],"=")
         self.timeout = self._parseInput(args, "t", self.DEFAULT_TIMEOUT)
@@ -112,7 +113,6 @@ class Settings():
             self.whoisGetRemoteFile = args["whois_get_servers"]
 
         #-----DNS PARAMS------
-        self.dnsServer = self._parseInput(args, "dns_server", None, self.SEPARATOR)
         self.dnsRecords = self._parseInput(args, "dns_records", self.DEFAULT_DNS_RECORDS, self.SEPARATOR)
 
         #-----TRACE PARAMS------
@@ -565,28 +565,36 @@ class RequestsUtility():
         url = url.strip().lower()
 
         idxParams = url.find("?")
-        urlNoParams = url[:idxParams] if idxParams > 0 else url 
+        url = url[:idxParams] if idxParams > 0 else url 
         
-        idxMethod = urlNoParams.find("://")
-        urlNoMethod = urlNoParams[idxMethod+3:] if idxMethod > 0 else urlNoParams
+        idxMethod = url.find("://")
+        urlNoMethod = url[idxMethod+3:] if idxMethod > 0 else url
 
-        idxPort = urlNoMethod.rfind(":")
+        idxPath = urlNoMethod.find("/")
+        baseUrl = urlNoMethod[:idxPath] if idxPath > 0 else urlNoMethod 
 
-        domain = urlNoMethod[:idxPort] if idxPort > 0 else urlNoMethod
-        domainSimple = domain
+        idxPort = baseUrl.rfind(":")
+        domain = baseUrl[:idxPort] if idxPort > 0 else baseUrl
 
-        if domain.startswith("www."):
-            domainSimple = domain[4:]
+        idxExt = re.match(domain,"(\.[a-z]{2,3})+$")
+        domainSimple = domain[:idxExt]
 
+        if domain.count(".") > 1:
+            tldIdx = domainSimple.find(".")
+            tld = domainSimple[tldIdx+1:]
+        else:
+            tld = domain
+   
         if idxMethod < 0:
-            urlNoParams = RequestsUtility.SECURE_SCHEME + "://" + urlNoParams
+            url = RequestsUtility.SECURE_SCHEME + "://" + urlNoMethod
+        
+        port = int(baseUrl[idxPort+1:]) if idxPort > -1 else RequestsUtility.DEFAULT_PORT
 
         return (
-            urlNoParams,
+            url,
             domain,
-            domainSimple,
-            int(urlNoMethod[idxPort+1:]) if idxPort > -1 else RequestsUtility.DEFAULT_PORT,
-            urlNoParams[:idxMethod] if idxMethod > -1 else RequestsUtility.SECURE_SCHEME
+            tld,
+            port
         )
 
 
@@ -628,7 +636,7 @@ class WhoisComponent(EnumComponent):
     FILE_URL = "https://www.nirsoft.net/whois-servers.txt"
     
     def __init__(self, settings:Settings):
-        self.domain = settings.domainSimple
+        self.domain = settings.domain
         self.server = settings.whoisServer
         self.filePath = settings.whoisFromFile
         self.remoteFileDest = settings.whoisGetRemoteFile
@@ -699,6 +707,7 @@ class DnsComponent(EnumComponent):
     def __init__(self, settings:Settings):
         super().__init__("DNS RECORDS", settings)
         self.domain = settings.domain
+        self.tld = settings.tld
         self.records = settings.dnsRecords
         self.resolver = dns.resolver.Resolver()
         if settings.dnsServer:
@@ -723,21 +732,23 @@ class DnsComponent(EnumComponent):
 
     def _serverInfo(self):
         results = {}
-        results["DNS Server"] = self.resolver.nameservers
 
         try:
-            NxServer = [i.to_text() for i in self.resolver.resolve(self.domain, "NS")]
+            NxServer = [i.to_text() for i in self.resolver.resolve(self.tld, "NS")]
             servers = []
             for s in NxServer:
                 servers.append(f"{s} ({self.resolver.resolve(s,'A')[0].to_text()})")
         except DNSException:
             servers = None
 
+        soaServer = self.resolver.resolve(self.tld, "SOA")[0].to_text()
+
         return {
             "DNS Server": self.resolver.nameservers,
-            "Authoritative Server": servers
+            "TLD": self.tld,
+            "Authoritative DNS Server": servers,
+            "SOA Server": soaServer
         }
-
 
 
 class TraceComponent(EnumComponent):
@@ -1353,7 +1364,7 @@ class BruteforceModule(EnumComponent):
         self.includedHttpCodes = settings.bruteIncludedHttpCodes
         self.printfourOhfourPages = settings.brutePrint404
         self.extensions = None
-        self.domain = settings.url
+        self.url = settings.url
         self.threads = settings.threads
         self.verbose = settings.verbose
         self.req = RequestsUtility(self, settings, followRedirects=True)
@@ -1394,7 +1405,7 @@ class BruteforceModule(EnumComponent):
         if url.startswith("/"):
                 url = url[1:]
 
-        response = self.req.httpRequest(f"{self.domain}/{url}")
+        response = self.req.httpRequest(f"{self.url}/{url}")
         responseCode = str(response.status_code)
         responseHistory = response.history
             
@@ -1420,7 +1431,7 @@ class BruteforceModule(EnumComponent):
 
     def getFourOhFourPage(self):
         randomUrl = "".join(random.choice(string.ascii_letters) for i in range(0, self.RANDOM_URL_LENGTH))
-        url = self.domain + "/" + randomUrl
+        url = self.url + "/" + randomUrl
         response = self.req.httpRequest(url)
         return{
             "Redirects": [u.url for u in response.history] if response.history else response.url,
@@ -1445,7 +1456,8 @@ class Scan():
             "http": HTTPComponent,
             "web": WebEnumComponent,
             "dorks": DorksComponent,
-            "brute": BruteforceModule
+            "brute": BruteforceModule,
+            "debug":None
         }
 
     def run(self):
