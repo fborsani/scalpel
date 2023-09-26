@@ -734,14 +734,14 @@ class DnsComponent(EnumComponent):
         results = {}
 
         try:
+            soaServer = self.resolver.resolve(self.tld, "SOA")[0].to_text()
             NxServer = [i.to_text() for i in self.resolver.resolve(self.tld, "NS")]
             servers = []
             for s in NxServer:
                 servers.append(f"{s} ({self.resolver.resolve(s,'A')[0].to_text()})")
         except DNSException:
             servers = None
-
-        soaServer = self.resolver.resolve(self.tld, "SOA")[0].to_text()
+            soaServer = None
 
         return {
             "DNS Server": self.resolver.nameservers,
@@ -1456,8 +1456,7 @@ class Scan():
             "http": HTTPComponent,
             "web": WebEnumComponent,
             "dorks": DorksComponent,
-            "brute": BruteforceModule,
-            "debug":None
+            "brute": BruteforceModule
         }
 
     def run(self):
