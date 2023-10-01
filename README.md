@@ -9,9 +9,16 @@ The program is built as a collection of modules that can be executed togheter or
 * **web**: retrieves webpage information: metatada in head, robots.txt entries, sitemaps, page title, favicon, included scripts, included stylesheets, page links and html comments
 * **dorks**: run Google dorks queries against the target url. The module returns the generated Google query urls and a list of links as result. The payloads are retrieved from a file specified with the parameter --dorks-file
 * **brute**: detect exposed pages and resources by executing queries for urls listed in a dictionary file. The payloads are retrieved from a file specified with the parameter --brute-file
+## Installation
+To use the python script directly download the files and install the requirements using the commands below
+```
+wget https://raw.githubusercontent.com/fborsani/scalpel/main/scalpel/scalpel.py -O scalpel.py
+wget https://raw.githubusercontent.com/fborsani/scalpel/main/requirements.txt -O requirements.txt
+pip -r requirements.txt
+```
+As an it is possible to use the executable version of the script that comes already prepackaged with all the requirements. These files are avaliable for both Windows and Linux under the releases tab.
 ## Usage
-The script creates privileged sockets during its execution and requires root privileges to run.
-By default the script can be invoked without parameters, this will trigger the execution of all modules that do not require additional parameters
+By default the script can be invoked without parameters, this will trigger the execution of the following modules: whois, dns, ssl, http and web.
 ```
 python scalpel.py <host>
 ```
@@ -31,6 +38,7 @@ Generic
 -C <cookie>=<value>    set a request cookie to be included in all requests. Can be specified mutiple times
 -t <seconds>           request timeout in seconds
 --threads <count>      max threads to use
+--dns-server <ip>      dns server for queries and host resolution
 ```
 whois module
 ```
@@ -40,7 +48,6 @@ whois module
 ```
 dns module
 ```
---dns-server <ip>                        dns server to query (by default is 8.8.8.8)
 --dns-records <record1,record2,...>      list of dns queries to perform (i.e. A,AAAA,MX,CNAME). By default will query for all entries
 ```
 trace module
@@ -64,28 +71,21 @@ brute module
 --brute-include-codes <HTTP codes>     print the result only if the HTTP response code is in the specified list. Accepts multiple values separated by a comma
 --brute-print-404                      print a 404 response even if it matches the webapp default 404 error page
 ```
-## Installation
-Download the python script and requirements.txt files
-```
-git clone https://github.com/fborsani/scalpel
-```
-Install the requirements
-```
-pip -r requirements.txt
-```
 ## Manual Build
+To build an executable file (exe or elf) fro source follow these steps:
+
 Clone the project
 ```
 git clone https://github.com/fborsani/scalpel
 ```
-Install the script requirements and extra dependencies
+Install the script requirements and extra dependencies required to generate the exe file
 ```
 pip -r requirements.txt
 pip install pyinstaller, psutil
 ```
 Navigate to the build folder and run pyinstaller
 ```
-cd <path>/scalpel/build
+cd <path>/scalpel-main/build
 pyinstaller scalpel.spec
 ```
-The compiled executable file will be stored under <path>/scalpel/build/dist
+The compiled executable file will be stored under <path>/scalpel-main/build/dist
