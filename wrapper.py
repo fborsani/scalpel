@@ -2,7 +2,7 @@ import os, sys, ctypes, platform
 import scalpel.scalpel as scalpel
 import psutil
 
-def checkTerm():
+def check_term():
     '''
     If the process is started by docuble clicking on the .exe file the father's process name will be the same as this instance.
     Otherwise if the process is started by cmd, Powershell or another script/program the father's name will not match with the instance
@@ -18,35 +18,35 @@ def checkTerm():
         
     return curr.name() == parent.name() and  origin.name() != 'explorer.exe'
 
-def preloadExe(args:list):
-    fromTerm = checkTerm()
-    appName = "scalpel.exe"
+def preload_exe(args:list):
+    from_term = check_term()
+    app_name = "scalpel.exe"
 
-    if not fromTerm:
+    if not from_term:
         args = input("Specify the arguments to pass to the script and press ENTER\n").split()
     
     try:
-        scalpel.Scan(appName, args).run()
+        scalpel.Scan(app_name, args).run()
     except KeyboardInterrupt:
         print("Interrupt detected")
     except Exception as e:
         print(f"Unexpected error:\n{e.strerror}")
     finally:
-        if not fromTerm:
+        if not from_term:
             #Prevent terminal from closing
             input("Press ENTER to close...")
 
-def preloadElf(args:list):
-    appName = "scalpel"
+def preload_elf(args:list):
+    app_name = "scalpel"
     try:
-        scalpel.Scan(appName, args).run()
+        scalpel.Scan(app_name, args).run()
     except KeyboardInterrupt:
         print("Interrupt detected")
  
 def main():
     args = sys.argv[1:]
     if platform.system() == "Windows":
-        preloadExe(args)
+        preload_exe(args)
     else:
-        preloadElf(args)
+        preload_elf(args)
 main()
