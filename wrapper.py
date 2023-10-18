@@ -23,18 +23,16 @@ def preload_exe(args:list):
     app_name = "scalpel.exe"
 
     if not from_term:
-        args = input("Specify the arguments to pass to the script and press ENTER\n").split()
-    
-    try:
-        scalpel.Scan(app_name, args).run()
-    except KeyboardInterrupt:
-        print("Interrupt detected")
-    except Exception as e:
-        print(f"Unexpected error:\n{e.strerror}")
-    finally:
-        if not from_term:
-            #Prevent terminal from closing
-            input("Press ENTER to close...")
+        while(True):
+            args = input("\n\nSpecify the arguments and press ENTER\n").split()
+            try:
+                scalpel.Scan(app_name, args).run()
+            except KeyboardInterrupt:
+                print("Interrupt detected")
+            except Exception as e:
+                print(f"Unexpected error:\n{e.strerror}")
+
+    scalpel.Scan(app_name, args).run()
 
 def preload_elf(args:list):
     app_name = "scalpel"

@@ -507,13 +507,18 @@ class RequestsUtility():
             rec.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO, struct.pack("ll", 5, 0))
         return rec
     
-    def sock_request(self, url:str, port:int, body:str=None):       
-        sc = self.create_socket()
+    def sock_request(self, url:str, port:int, body:str=None, ssl_ctx=None):
+
+        if ssl_ctx:
+            sc = ssl_ctx.wrap_socket(socket.socket(), server_hostname=url)
+        else:
+            sc = self.create_socket()
 
         try:      
             sc.settimeout(self.timeout)
             sc.connect((url, port))
-            sc.send(body.encode())
+            if body:
+                sc.send(body.encode())
             return sc
         except socket.error as e:
             sc.close()
@@ -580,7 +585,7 @@ class RequestsUtility():
 
     @staticmethod
     def parse_url(url:str):
-        url = url.strip().lower()
+        url = url.strip()
 
         idx_params = url.find("?")
         url = url[:idx_params] if idx_params > 0 else url 
@@ -752,7 +757,7 @@ class DnsComponent(EnumComponent):
         results = {}
 
         try:
-            server_soa = self.resolver.resolve(self.tld, "SOA")[0].to_text()
+            server_soa = self._pretty_print_soa()
             server_nx = [i.to_text() for i in self.resolver.resolve(self.tld, "NS")]
             servers = []
             for s in server_nx:
@@ -767,6 +772,40 @@ class DnsComponent(EnumComponent):
             "Authoritative DNS Server": servers,
             "SOA Server": server_soa
         }
+    
+    def _pretty_print_soa(self):
+        try:
+            req = self.resolver.resolve(self.tld, "SOA")[0].to_text()
+            data = req.split(" ")
+            return {
+                "Main Server": data[0][:-1],
+                "Admin Mail": self._format_soa_mail(data[1]),
+                "Serial": data[2],
+                "Refresh rate": data[3],
+                "Retry rate": data[4],
+                "Expiry time": data[5],
+                "TTL": data[6]
+            }
+        except DNSException:
+            return None
+        
+    def _format_soa_mail(self, mail:str):
+        if mail.endswith("."):
+            mail = mail[:-1]
+
+        domain_idx = mail.rfind("\.")
+        if domain_idx > -1:
+            mail = mail.replace("\.", ".")
+        else:
+            domain_idx = 0
+        
+        if domain_idx > 0:
+            return mail[:domain_idx+1] + mail[domain_idx+1:].replace(".", "@", 1)
+        
+        return mail.replace(".", "@", 1)
+
+
+
 
 
 class TraceComponent(EnumComponent):
@@ -806,6 +845,9 @@ class TraceComponent(EnumComponent):
         note = None
         last_addr_before_error = None
         total_time = 0
+                    
+        if self.verbose and Environment().is_windows:
+            OutputWriter.print_info_text(f"Windows OS detected. Verify that your firewall is not blocking the application", self)
 
         for hop in range(1, self.ttl+1):
             rec = self.req.create_listener()
@@ -902,6 +944,8 @@ class SSLComponent(EnumComponent):
         self.ctx = ssl.create_default_context()
         self.ctx.check_hostname = False
         self.ctx.verify_mode = ssl.CERT_NONE
+
+        self.req = RequestsUtility(self, settings)
         
         super().__init__("CERTIFICATE AND SSL", settings)
 
@@ -1034,32 +1078,31 @@ class SSLComponent(EnumComponent):
         if self.verbose:
             OutputWriter.print_info_text("Retrieving certificate", self)
 
-        with self.ctx.wrap_socket(socket.socket(), server_hostname=self.domain) as sock:
-            sock.connect((self.domain, self.port))
-            cert_der = sock.getpeercert(True)
-            sock.close()
-            cert_pem = ssl.DER_cert_to_PEM_cert(cert_der)
-            cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, cert_pem)
-            pub_key = cert.get_pubkey()
-            pub_key_str= crypto.dump_publickey(crypto.FILETYPE_PEM,pub_key)
-            ext = [cert.get_extension(i) for i in range(cert.get_extension_count())]
-            return {
-                "Ceritificate (PEM)": str(cert_pem),
-                "Valid": not cert.has_expired(),
-                "Signature": cert.get_signature_algorithm(),
-                "Fingerprint (SHA1)":cert.digest('sha1'),
-                "Fingerprint (SHA256)":cert.digest('sha256'),
-                "Serial Number": cert.get_serial_number(),
-                "Version": cert.get_version(),
-                "Public key": pub_key_str,
-                "Key format": self._print_key_type(pub_key),
-                "Key length": pub_key.bits(),
-                "Subject": dict(cert.get_subject().get_components()),
-                "Issuer": dict(cert.get_issuer().get_components()),
-                "Valid from": datetime.strptime(cert.get_notBefore().decode(), "%Y%m%d%H%M%S%z").date().isoformat(),
-                "Valid until": datetime.strptime(cert.get_notAfter().decode(), "%Y%m%d%H%M%S%z").date().isoformat(),
-                "Extended information": {e.get_short_name().decode(): str(e).replace(", ","\n") for e in ext}
-                }
+        sock = self.req.sock_request(self.domain, self.port, ssl_ctx=self.ctx)
+        cert_der = sock.getpeercert(True)
+        sock.close()
+        cert_pem = ssl.DER_cert_to_PEM_cert(cert_der)
+        cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, cert_pem)
+        pub_key = cert.get_pubkey()
+        pub_key_str= crypto.dump_publickey(crypto.FILETYPE_PEM,pub_key)
+        ext = [cert.get_extension(i) for i in range(cert.get_extension_count())]
+        return {
+            "Ceritificate (PEM)": str(cert_pem),
+            "Valid": not cert.has_expired(),
+            "Signature": cert.get_signature_algorithm(),
+            "Fingerprint (SHA1)":cert.digest('sha1'),
+            "Fingerprint (SHA256)":cert.digest('sha256'),
+            "Serial Number": cert.get_serial_number(),
+            "Version": cert.get_version(),
+            "Public key": pub_key_str,
+            "Key format": self._print_key_type(pub_key),
+            "Key length": pub_key.bits(),
+            "Subject": dict(cert.get_subject().get_components()),
+            "Issuer": dict(cert.get_issuer().get_components()),
+            "Valid from": datetime.strptime(cert.get_notBefore().decode(), "%Y%m%d%H%M%S%z").date().isoformat(),
+            "Valid until": datetime.strptime(cert.get_notAfter().decode(), "%Y%m%d%H%M%S%z").date().isoformat(),
+            "Extended information": {e.get_short_name().decode(): str(e).replace(", ","\n") for e in ext}
+            }
         
     def _print_key_type(self, pub_key):
         if pub_key.type() == crypto.TYPE_RSA:
@@ -1087,6 +1130,9 @@ class HTTPComponent(EnumComponent):
         super().__init__("HTTP REQUESTS", settings)
 
     def run(self) -> dict:
+        if self.verbose:
+            OutputWriter.print_info_text(f"Testing url {self.url}", self)
+
         return {
             "HTTP info": self.get_http_info(),
             "HTTP methods": self.testHTTPMethods()
@@ -1147,6 +1193,9 @@ class WebEnumComponent(EnumComponent):
         self.verbose = settings.verbose
 
     def run(self):
+        if self.verbose:
+            OutputWriter.print_info_text(f"Testing url {self.url}", self)
+            
         response = self.req.http_request(self.url)
         soup = BeautifulSoup(response.text,"html.parser")
         robots = self.parse_robots_file()
@@ -1162,7 +1211,7 @@ class WebEnumComponent(EnumComponent):
             "Included scripts": [script["src"].strip() for script in soup.find_all("script",{"src":True}) if script["src"].strip()],
             "Included stylesheets": [link["href"].strip() for link in soup.find_all("link", rel="stylesheet") if link["href"].strip()],
             "Robots entries": robots,
-            "Sitemap entries": self._get_sitemap(robots["Sitemap"]),
+            "Sitemap entries": self._get_sitemap(robots["Sitemap"]) if robots else None,
             "Page links": list(set([link["href"].strip() for link in soup.find_all("a",{"href":True}) if link["href"].strip()])),
             "Comments": [line.strip() for line in soup.find_all(string = lambda text: isinstance(text,Comment)) if line.strip()]
             
