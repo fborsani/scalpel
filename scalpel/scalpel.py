@@ -805,9 +805,6 @@ class DnsComponent(EnumComponent):
         return mail.replace(".", "@", 1)
 
 
-
-
-
 class TraceComponent(EnumComponent):
     def __init__(self, settings:Settings):
         super().__init__("TRACEROUTE", settings)
@@ -1211,7 +1208,7 @@ class WebEnumComponent(EnumComponent):
             "Included scripts": [script["src"].strip() for script in soup.find_all("script",{"src":True}) if script["src"].strip()],
             "Included stylesheets": [link["href"].strip() for link in soup.find_all("link", rel="stylesheet") if link["href"].strip()],
             "Robots entries": robots,
-            "Sitemap entries": self._get_sitemap(robots["Sitemap"]) if robots else None,
+            "Sitemap entries": self._get_sitemap(robots["Sitemap"] if robots else None),
             "Page links": list(set([link["href"].strip() for link in soup.find_all("a",{"href":True}) if link["href"].strip()])),
             "Comments": [line.strip() for line in soup.find_all(string = lambda text: isinstance(text,Comment)) if line.strip()]
             
