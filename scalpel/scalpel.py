@@ -450,29 +450,29 @@ class RequestsUtility():
 
         self.caller = caller
 
-    def http_request(self, url:str, method:str="get", params:dict=None):
+    def http_request(self, url:str, method:str="get", params:dict=None, headers:dict=None, cookies:dict=None):
         try:
             if self.session:
                 if method == "get":
                     return self.session.get(url,
                                         timeout=self.timeout,
                                         allow_redirects=self.follow_redirects,
-                                        cookies=self.cookies,
-                                        headers=self.headers,
+                                        cookies=cookies if cookies else self.cookies,
+                                        headers=headers if headers else self.headers,
                                         params=params) 
                 if method == "post":
                     return self.session.post(url,
                                         timeout=self.timeout,
                                         allow_redirects=self.follow_redirects,
-                                        cookies=self.cookies,
-                                        headers=self.headers,
+                                        cookies=cookies if cookies else self.cookies,
+                                        headers=headers if headers else self.headers,
                                         params=params) 
 
             return self.METHODS[method](url,
                                         timeout=self.timeout,
                                         allow_redirects=self.follow_redirects,
-                                        cookies=self.cookies,
-                                        headers=self.headers,
+                                        cookies=cookies if cookies else self.cookies,
+                                        headers=headers if headers else self.headers,
                                         params=params) 
         except requests.ConnectionError as e:
             raise EnumException(self.caller, f"Unable to connect to {url}", e)
@@ -816,7 +816,7 @@ class TraceComponent(EnumComponent):
         self.dns_server = settings.dns_server
         self.verbose = settings.verbose
 
-        self.req = RequestsUtility(self)
+        self.req = RequestsUtility(self, settings)
 
     def run(self):
         dest_address = self.req.dns_single_query(self.domain, "A", self.dns_server, self.timeout)
@@ -1322,7 +1322,7 @@ class WebEnumComponent(EnumComponent):
                         for loc in tag.find_all("loc"):
                             sitemap_entries.append(loc.text)      
         else:
-            r  = self.req.http_request(url,headers=headers)
+            r  = self.req.http_request(url)
             if r.status_code == 200 and r.text:
                 sitemap_type = "plaintext"
                 sitemap_entries = r.text.splitlines()
@@ -1503,7 +1503,7 @@ class Scan():
         
         self.modules = {
             "whois": WhoisComponent,
-            "dns": DnsComponent,
+            "dns": DnsComponent
             "trace": TraceComponent,
             "ssl": SSLComponent,
             "http": HTTPComponent,
