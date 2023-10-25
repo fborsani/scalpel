@@ -1536,7 +1536,7 @@ class Scan():
         
         self.modules = {
             "whois": WhoisComponent,
-            "dns": DnsComponent
+            "dns": DnsComponent,
             "trace": TraceComponent,
             "ssl": SSLComponent,
             "http": HTTPComponent,
