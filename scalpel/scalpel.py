@@ -397,7 +397,7 @@ class RequestsUtility():
 
     RESERVED_PORT = 1024
     RANDOM_URL_LENGTH = 25
-    MALFORMED_URL = "/\\/{}[].;-_"
+    MALFORMED_URL = "test//test;[]{},./#\\test%0A%0D%00test"
 
     METHODS={
         "get":requests.get,
@@ -574,9 +574,6 @@ class RequestsUtility():
             code = response.status_code
             if history:
                 first_redirect = history[0]
-
-                print(f"H {history} -> {first_redirect.status_code} {response.status_code}")
-
                 return f"{RequestsUtility.format_response_code(first_redirect)} --> {RequestsUtility.format_response_code(code)} [{response.url}]"
         else:
             code = int(response)
