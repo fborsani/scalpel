@@ -103,7 +103,7 @@ class Settings():
         self.verbose = args["v"]
 
         #------REQUESTS PARAMS------
-        self.url, self.domain, self.tld, self.port = RequestsUtility.parse_url(args["url"])
+        self.url, self.base_url, self.domain, self.tld, self.port = RequestsUtility.parse_url(args["url"])
         self.headers = self._parse_multi_value_param(args["H"],":")
         self.cookies = self._parse_multi_value_param(args["C"],"=")
         self.timeout = self._parse_input(args, "t", self.DEFAULT_TIMEOUT)
@@ -396,6 +396,8 @@ class RequestsUtility():
     DEFAULT_DNS = ["8.8.8.8","8.8.4.4"]
 
     RESERVED_PORT = 1024
+    RANDOM_URL_LENGTH = 25
+    MALFORMED_URL = "/\\/{}[].;-_"
 
     METHODS={
         "get":requests.get,
@@ -411,7 +413,7 @@ class RequestsUtility():
         201: "OK - resource created",
         204: "OK - empty response",
         301: "Permanent redirect",
-        302: "Temporary redirerct",
+        302: "Temporary redirect",
         400: "Malformed request",
         401: "Authentication required",
         403: "Access forbidden",
@@ -566,11 +568,19 @@ class RequestsUtility():
 
     @staticmethod
     def format_response_code(response):
+        
         if isinstance(response, requests.Response):
+            history = response.history
             code = response.status_code
+            if history:
+                first_redirect = history[0]
+
+                print(f"H {history} -> {first_redirect.status_code} {response.status_code}")
+
+                return f"{RequestsUtility.format_response_code(first_redirect)} --> {RequestsUtility.format_response_code(code)} [{response.url}]"
         else:
             code = int(response)
-
+        
         if code in RequestsUtility.HTTP_CODES.keys():
             return f"{code} ({RequestsUtility.HTTP_CODES[code]})"
         return code
@@ -582,6 +592,19 @@ class RequestsUtility():
         if version == 11:
             return "HTTP 1.1"
         return "Not Found"
+    
+    @staticmethod
+    def get_random_url(base:str):
+        random_url = "".join(random.choice(string.ascii_letters) for i in range(0, RequestsUtility.RANDOM_URL_LENGTH))
+        if base.endswith("/"):
+            return base + random_url
+        return f"{base}/{random_url}"
+    
+    @staticmethod
+    def get_malformed_url(base:str):
+        if base.endswith("/"):
+            return base + RequestsUtility.MALFORMED_URL
+        return f"{base}/{RequestsUtility.MALFORMED_URL}"
 
     @staticmethod
     def parse_url(url:str):
@@ -607,14 +630,16 @@ class RequestsUtility():
             tld = domain_simple[idx_tld+1:]
         else:
             tld = domain
+
+        port = int(base_url[idx_port+1:]) if idx_port > -1 else RequestsUtility.DEFAULT_PORT
    
         if idx_method < 0:
             url = RequestsUtility.SECURE_SCHEME + "://" + url_no_method
+            base_url = RequestsUtility.SECURE_SCHEME + "://" + base_url
         
-        port = int(base_url[idx_port+1:]) if idx_port > -1 else RequestsUtility.DEFAULT_PORT
-
         return (
             url,
+            base_url,
             domain,
             tld,
             port
@@ -1121,6 +1146,7 @@ class SSLComponent(EnumComponent):
 class HTTPComponent(EnumComponent):
     def __init__(self, settings:Settings):
         self.url = settings.url
+        self.base_url = settings.base_url
         self.req = RequestsUtility(self, settings, True)
         self.verbose = settings.verbose
         
@@ -1132,7 +1158,10 @@ class HTTPComponent(EnumComponent):
 
         return {
             "HTTP info": self.get_http_info(),
-            "HTTP methods": self.testHTTPMethods()
+            "HTTP methods": self._test_methods(),
+            "Base Url Response": self._test_base_url(),
+            "Page Not Found Response": self._test_page_not_found(),
+            "Malformed Url Response": self._test_malformed_url()
         }
 
     def get_http_info(self):
@@ -1140,7 +1169,7 @@ class HTTPComponent(EnumComponent):
         options = self.req.http_request(self.url,"options")
 
         return {
-            "Response code": self.req.format_response_code(response),
+            "Response": self._parse_request(response),
             "HTTP version": self.req.format_http_version(response.raw.version),
             "Methods": options.headers["Allow"] if "Allow" in options.headers.keys() else None,
             "Headers": {k: [r.strip() for r in v.split(";") if r ] for k,v in response.headers.items()},
@@ -1156,7 +1185,7 @@ class HTTPComponent(EnumComponent):
                         } for k in self.req.get_session_cookies()}
         }
 
-    def _parseRequest(self, req, trim:int=80):
+    def _parse_request(self, req, trim:int=80):
         text = None
         if req.text:
             text = req.text[:trim]+"..."
@@ -1164,22 +1193,37 @@ class HTTPComponent(EnumComponent):
             text = "EMPTY RESPONSE"
 
         return {
+            "Url": req.history[0].url if req.history else req.url,
             "Code": self.req.format_response_code(req),
             "Length (bytes)": str(len(req.content)) if req.content else "0",
             "Length (chars)": str(len(req.text)) if req.text else "0",
-            "Response": text
+            "Body": text
         }
     
-    def testHTTPMethods(self):
+    def _test_methods(self):
         if self.verbose:
             OutputWriter.print_info_text("Testing supported methods", self)
 
         results = {}
 
         for method in self.req.METHODS.keys():
-            results[method.upper()] = self._parseRequest(self.req.http_request(self.url, method))
+            results[method.upper()] = self._parse_request(self.req.http_request(self.url, method))
                                                                
         return results
+
+    def _test_base_url(self):
+        if self.url != self.base_url:
+            return self._parse_request(self.req.http_request(self.base_url)) 
+        return "Already hitting base domain. See HTTP info section above for response data" 
+    
+    def _test_page_not_found(self):
+        random_url = self.req.get_random_url(self.url)
+        return self._parse_request(self.req.http_request(random_url))
+    
+        
+    def _test_malformed_url(self):
+        url = self.req.get_malformed_url(self.url)
+        return self._parse_request(self.req.http_request(url))
 
 
 class WebEnumComponent(EnumComponent):
@@ -1469,18 +1513,7 @@ class BruteforceModule(EnumComponent):
                     if self.print_404:
                         return (url, "404 Page")
                 else:
-                    return self._printResult(response, url)
-    
-    def _printResult(self, response, url):
-        history = response.history
-
-        if history:
-            http_code_first = history[0].status_code
-            http_code_last = history[-1].status_code
-            last_url = history[-1].url
-            return(url, f"{RequestsUtility.format_response_code(http_code_first)} --> {RequestsUtility.format_response_code(http_code_last)} [{last_url}]")
-        else:
-            return(url, RequestsUtility.format_response_code(response.status_code))
+                    return(url, RequestsUtility.format_response_code(response))
 
     def get_page_404(self):
         random_url = "".join(random.choice(string.ascii_letters) for i in range(0, self.RANDOM_URL_LENGTH))
