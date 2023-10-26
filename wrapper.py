@@ -24,13 +24,18 @@ def preload_exe(args:list):
 
     if not from_term:
         while(True):
-            args = input("\n\nSpecify the arguments and press ENTER\n").split()
+            args = input("\n\nSpecify the arguments and press ENTER. Use -h to display the command list\n").split()
             try:
                 scalpel.Scan(app_name, args).run()
             except KeyboardInterrupt:
                 print("Interrupt detected")
             except Exception as e:
                 print(f"Unexpected error:\n{e.strerror}")
+            except SystemExit:
+                #When argparse fails to parse the arguments or the user calls the script with the -h flag to display the help message argparse stops the execution
+                #by invoking the exit command. 
+                #We do not want to close the terminal when the program is being executed from the desktop so we capture and suppress the exception
+                pass
 
     scalpel.Scan(app_name, args).run()
 
